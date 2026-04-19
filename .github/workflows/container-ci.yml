@@ -1,0 +1,30 @@
+---
+name: OCI Container Quality Checks
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+env:
+  IMG_NAME: ghcr.io/urutau-ltd/pipe
+
+jobs:
+  build-container-image-test:
+    name: Test build image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Build with Buildah
+        uses: redhat-actions/buildah-build@v2
+        with:
+          image: ${{ env.IMG_NAME }}
+          tags: ci
+          containerfiles: |
+            ./Dockerfile
+...
