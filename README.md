@@ -1,7 +1,7 @@
 # pipe
 
 <div align="center">
-    <img src="./repo-assets/pipe.svg" width="150" alt="Gavia logo" />
+    <img src=".repo-assets/pipe.svg" width="150" alt="pipe logo" />
 </div>
 
 Stupidly Light CI runner for
