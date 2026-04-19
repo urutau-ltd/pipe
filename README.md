@@ -1,5 +1,9 @@
 # pipe
 
+<div align="center">
+    <img src="./repo-assets/pipe.svg" width="150" alt="Gavia logo" />
+</div>
+
 Stupidly Light CI runner for
 [`soft-serve`](https://github.com/charmbracelet/soft-serve) and local machines.
 
