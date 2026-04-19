@@ -1,0 +1,10 @@
+services:
+  pipe:
+    image: "pipe:latest"
+    container_name: pipe
+    restart: always
+    ports:
+      - "127.0.0.1:9000:9000"
+    volumes:
+      - "./pipe/workdir:/tmp/pipe:Z"
+    command: ["server", "--clone", "http://soft-serve:23232"]

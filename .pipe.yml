@@ -1,0 +1,26 @@
+# .pipe.yml — pipe's own CI pipeline.
+# Run locally:    make demo-local
+# Run in Podman:  make demo
+
+name: pipe
+
+steps:
+  - name: vet
+    parallel: true
+    run: go vet ./...
+
+  - name: test
+    parallel: true
+    run: |
+      RACE=""
+      [ "$(go env CGO_ENABLED)" = "1" ] && RACE="-race"
+      go test $RACE -count=1 ./...
+
+  - name: build
+    run: |
+      mkdir -p dist
+      CGO_ENABLED=0 go build \
+        -ldflags="-s -w -X main.version=${PIPE_COMMIT:-dev}" \
+        -o dist/pipe .
+      echo "==> $(./dist/pipe version)"
+      ls -lh dist/pipe

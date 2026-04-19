@@ -1,0 +1,91 @@
+# examples/artifacts.pipe.yml
+#
+# Builds a release tarball, generates checksums, and publishes to a local
+# artifacts directory (served by Caddy or any HTTP server).
+#
+# Directory layout after publish:
+#   /opt/artifacts/
+#     myapp-a1b2c3d-linux-amd64.tar.gz
+#     myapp-a1b2c3d-linux-amd64.tar.gz.sha256
+#     latest -> myapp-a1b2c3d-linux-amd64.tar.gz   (symlink)
+#
+# Only the last 10 releases are kept. Older ones are pruned automatically.
+
+name: artifacts
+
+env:
+  APP: myapp
+  ARTIFACTS_DIR: /opt/artifacts # must exist and be writable by the pipe user
+
+steps:
+  # ── parallel: lint + test ──────────────────────────────────────────────────
+  - name: vet
+    parallel: true
+    run: go vet ./...
+
+  - name: test
+    parallel: true
+    run: go test ./...
+
+  # ── build ──────────────────────────────────────────────────────────────────
+  - name: build
+    run: |
+      mkdir -p dist
+      CGO_ENABLED=0 go build \
+        -ldflags="-s -w -X main.version=$PIPE_COMMIT" \
+        -o dist/$APP .
+
+  # ── package: produce a versioned tarball + checksum ───────────────────────
+  - name: package
+    run: |
+      ARCHIVE="${APP}-${PIPE_COMMIT}-linux-amd64.tar.gz"
+
+      tar -czf "dist/$ARCHIVE" \
+        -C dist $APP
+
+      # SHA-256 checksum file (same format as sha256sum --check expects)
+      sha256sum "dist/$ARCHIVE" > "dist/${ARCHIVE}.sha256"
+
+      echo "==> packaged"
+      echo "    archive:  dist/$ARCHIVE"
+      echo "    checksum: dist/${ARCHIVE}.sha256"
+      cat "dist/${ARCHIVE}.sha256"
+
+  # ── publish on main only ───────────────────────────────────────────────────
+  - name: publish
+    branches:
+      - main
+    run: |
+      ARCHIVE="${APP}-${PIPE_COMMIT}-linux-amd64.tar.gz"
+
+      mkdir -p "$ARTIFACTS_DIR"
+
+      # Copy files to artifacts directory
+      cp "dist/$ARCHIVE"         "$ARTIFACTS_DIR/"
+      cp "dist/${ARCHIVE}.sha256" "$ARTIFACTS_DIR/"
+
+      # Update the "latest" symlink atomically
+      ln -sfn "$ARTIFACTS_DIR/$ARCHIVE" "$ARTIFACTS_DIR/${APP}-latest-linux-amd64.tar.gz"
+
+      # Prune: keep only the 10 most recent tarballs (+ their .sha256 files)
+      ls -t "$ARTIFACTS_DIR"/${APP}-*-linux-amd64.tar.gz \
+        | tail -n +11 \
+        | while read -r old; do
+            rm -f "$old" "${old}.sha256"
+            echo "    pruned: $old"
+          done
+
+      echo "==> published"
+      ls -lh "$ARTIFACTS_DIR/"
+
+  # ── verify: download and check the published artifact ─────────────────────
+  - name: verify
+    branches:
+      - main
+    run: |
+      ARCHIVE="${APP}-${PIPE_COMMIT}-linux-amd64.tar.gz"
+
+      # Re-verify checksum from the published location
+      cd "$ARTIFACTS_DIR"
+      sha256sum --check "${ARCHIVE}.sha256"
+      echo "==> checksum verified for published artifact"
