@@ -1,1 +1,51 @@
+# examples/gpg-sign.pipe.yml
+#
+# Builds a binary and GPG-signs it on pushes to main.
+#
+# Prerequisites on the host running pipe:
+#   gpg --import signing-key.asc
+#   gpg --list-secret-keys   # verify key is present
+#
+# In server mode the key must be imported into the pipe container:
+#   podman exec -i pipe gpg --import < signing-key.asc
 
+name: gpg-sign
+
+env:
+  BINARY: ./dist/myapp
+  GPG_KEY_ID: your@email.com    # change to your key fingerprint or email
+
+steps:
+  - name: build
+    run: |
+      mkdir -p dist
+      CGO_ENABLED=0 go build \
+        -ldflags="-s -w -X main.version=$PIPE_COMMIT" \
+        -o $BINARY .
+
+  - name: checksum
+    run: |
+      sha256sum $BINARY > ${BINARY}.sha256
+      echo "==> checksum"
+      cat ${BINARY}.sha256
+
+  - name: sign
+    branches:
+      - main
+    run: |
+      # Produce a detached ASCII-armored signature.
+      # --pinentry-mode loopback allows passphrase-less keys (use an
+      # unprotected key or a key agent in production).
+      gpg --batch \
+          --yes \
+          --pinentry-mode loopback \
+          --local-user "$GPG_KEY_ID" \
+          --detach-sign \
+          --armor \
+          "$BINARY"
+
+      # Verify the signature before publishing
+      gpg --verify "${BINARY}.asc" "$BINARY"
+      echo "==> signature verified: ${BINARY}.asc"
+
+      ls -lh dist/

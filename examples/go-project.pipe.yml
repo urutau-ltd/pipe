@@ -1,1 +1,47 @@
+# examples/go-project.pipe.yml
+# A typical Go project: parallel quality checks, then build, then deploy.
 
+name: go-project
+
+env:
+  BINARY_NAME: myapp
+  BUILD_DIR: ./dist
+  GOOS: linux
+  GOARCH: amd64
+
+steps:
+  # ── quality checks run in parallel ────────────────────────────────────────
+  - name: lint
+    parallel: true
+    run: |
+      go vet ./...
+      # install golangci-lint if not present
+      if ! command -v golangci-lint &>/dev/null; then
+        curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh \
+          | sh -s -- -b "$(go env GOPATH)/bin"
+      fi
+      golangci-lint run ./...
+
+  - name: test
+    parallel: true
+    run: |
+      go test -race -coverprofile=coverage.out ./...
+      go tool cover -func=coverage.out | tail -1
+
+  # ── build (waits for lint + test) ──────────────────────────────────────────
+  - name: build
+    run: |
+      mkdir -p $BUILD_DIR
+      CGO_ENABLED=0 go build \
+        -ldflags="-s -w -X main.version=$PIPE_COMMIT" \
+        -o $BUILD_DIR/$BINARY_NAME .
+      echo "built: $(file $BUILD_DIR/$BINARY_NAME)"
+
+  # ── deploy only on main ────────────────────────────────────────────────────
+  - name: deploy
+    branches:
+      - main
+    run: |
+      scp $BUILD_DIR/$BINARY_NAME deploy@yourserver:/usr/local/bin/$BINARY_NAME
+      ssh deploy@yourserver "systemctl restart $BINARY_NAME"
+      echo "deployed $BINARY_NAME @ $PIPE_COMMIT to yourserver"

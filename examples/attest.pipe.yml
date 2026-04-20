@@ -1,1 +1,106 @@
+# examples/attest.pipe.yml
+#
+# Builds a binary, generates an SBOM and a SLSA v0.2 provenance predicate,
+# then attests both via cosign.
+#
+# Prerequisites:
+#   syft   — https://github.com/anchore/syft   (SBOM generation)
+#   cosign — https://docs.sigstore.dev/cosign/installation
+#
+# Keyless mode (Sigstore public infrastructure) requires an OIDC token.
+# For a self-hosted setup without OIDC, use a cosign key pair:
+#   cosign generate-key-pair          # produces cosign.key + cosign.pub
+#   # then replace "cosign attest" with:
+#   # cosign attest --key cosign.key --predicate ... <artifact>
 
+name: attest
+
+env:
+  BINARY: dist/app
+
+steps:
+  # ── build ──────────────────────────────────────────────────────────────────
+  - name: build
+    run: |
+      mkdir -p dist
+      CGO_ENABLED=0 go build \
+        -ldflags="-s -w -X main.version=$PIPE_COMMIT" \
+        -o $BINARY .
+      sha256sum $BINARY | tee dist/app.sha256
+
+  # ── sbom + provenance run in parallel ──────────────────────────────────────
+  - name: sbom
+    parallel: true
+    run: |
+      syft dir:. \
+        --output spdx-json \
+        --file dist/sbom.spdx.json
+      echo "==> SBOM written to dist/sbom.spdx.json"
+
+  - name: provenance
+    parallel: true
+    run: |
+      BUILD_START=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+      DIGEST=$(sha256sum $BINARY | awk '{print $1}')
+
+      cat > dist/provenance.json << EOF
+      {
+        "_type": "https://in-toto.io/Statement/v0.1",
+        "predicateType": "https://slsa.dev/provenance/v0.2",
+        "subject": [
+          {
+            "name": "$BINARY",
+            "digest": { "sha256": "$DIGEST" }
+          }
+        ],
+        "predicate": {
+          "builder": {
+            "id": "pipe@$PIPE_COMMIT"
+          },
+          "buildType": "urutau-ltd.org/pipe/v1",
+          "invocation": {
+            "configSource": {
+              "uri": "git+ssh://git.urutau-ltd.org/$PIPE_REPO@refs/heads/$PIPE_BRANCH",
+              "digest": { "sha1": "$PIPE_COMMIT" },
+              "entryPoint": ".pipe.yml"
+            }
+          },
+          "metadata": {
+            "buildStartedOn": "$BUILD_START",
+            "completeness": {
+              "parameters": false,
+              "environment": false,
+              "materials": false
+            },
+            "reproducible": false
+          },
+          "materials": [
+            {
+              "uri": "git+ssh://git.urutau-ltd.org/$PIPE_REPO",
+              "digest": { "sha1": "$PIPE_COMMIT" }
+            }
+          ]
+        }
+      }
+      EOF
+      echo "==> provenance written to dist/provenance.json"
+
+  # ── attest on main only ────────────────────────────────────────────────────
+  - name: attest
+    branches:
+      - main
+    run: |
+      # Attest SBOM
+      cosign attest \
+        --type spdx \
+        --predicate dist/sbom.spdx.json \
+        $BINARY
+
+      # Attest SLSA provenance
+      cosign attest \
+        --type slsaprovenance \
+        --predicate dist/provenance.json \
+        $BINARY
+
+      echo "==> attestations uploaded to Rekor transparency log"
+      echo "    verify with: cosign verify-attestation --type slsaprovenance $BINARY"

@@ -1,0 +1,14 @@
+.github
+.repo-assets
+dist
+examples
+.dockerignore
+.gitignore
+.pipe.yml
+.slsa-goreleaser.yml
+Dockerfile
+LICENSE
+Makefile
+*.md
+docker-compose.yml
+manifest.scm
