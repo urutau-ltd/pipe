@@ -1,0 +1,32 @@
+# examples/deno-project.pipe.yml
+# Typical Deno workflow: formatting + lint in parallel, then tests and compile.
+
+name: deno-project
+
+env:
+  ENTRYPOINT: main.ts
+  OUTPUT: ./dist/app
+
+steps:
+  - name: fmt
+    parallel: true
+    run: deno fmt --check
+
+  - name: lint
+    parallel: true
+    run: deno lint
+
+  - name: test
+    run: deno test -A
+
+  - name: build
+    run: |
+      mkdir -p ./dist
+      deno compile -A --output "$OUTPUT" "$ENTRYPOINT"
+      echo "built: $OUTPUT"
+
+  - name: deploy
+    branches: [main]
+    run: |
+      scp "$OUTPUT" deploy@yourserver:/usr/local/bin/myapp
+      ssh deploy@yourserver "systemctl restart myapp"

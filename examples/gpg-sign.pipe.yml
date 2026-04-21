@@ -13,7 +13,7 @@ name: gpg-sign
 
 env:
   BINARY: ./dist/myapp
-  GPG_KEY_ID: your@email.com    # change to your key fingerprint or email
+  GPG_KEY_ID: your@email.com # change to your key fingerprint or email
 
 steps:
   - name: build

@@ -103,6 +103,25 @@ Pipeline-level `env:` keys are also available, overridable by the above.
 
 ## Local usage
 
+### Install locally (CGO disabled)
+
+```bash
+# install to ~/.local/bin/pipe
+make install-local
+
+# optional: custom destination
+make install-local INSTALL_PATH=/usr/local/bin/pipe
+
+# verify
+~/.local/bin/pipe version
+```
+
+If `~/.local/bin` is not in your `PATH`, add it:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
 ```bash
 # Run all steps
 pipe run
@@ -120,6 +139,27 @@ pipe run --branch main
 pipe run --file .ci.yml
 ```
 
+### Language quickstarts
+
+Use these from inside your project root:
+
+```bash
+# Go
+cp /path/to/pipe/examples/go-project.pipe.yml .pipe.yml
+pipe run --branch main
+
+# Rust
+cp /path/to/pipe/examples/rust-project.pipe.yml .pipe.yml
+pipe run --branch main
+
+# Deno
+cp /path/to/pipe/examples/deno-project.pipe.yml .pipe.yml
+pipe run --branch main
+```
+
+Before running, adjust `env:` values in the copied file (binary name, entrypoint,
+deploy host, etc.) to match your project.
+
 ---
 
 ## Server mode (soft-serve integration)
@@ -129,7 +169,15 @@ pipe server                                     # :9000, clone from http://soft-
 pipe server --port 8080
 pipe server --clone ssh://git.example.com:23231
 pipe server --workdir /var/lib/pipe
+pipe server --gotify-endpoint "https://gotify.local/message" --gotify-token "$GOTIFY_TOKEN"
+pipe server --gotify-endpoint "https://gotify.local/message" --gotify-token "$GOTIFY_TOKEN" --gotify-on fail
 ```
+
+### Optional webhook hardening
+
+- request body is capped at `64KiB`
+- only branch refs (`refs/heads/*`) are accepted
+- server uses sane read/write timeout defaults
 
 ### Endpoints
 
@@ -155,14 +203,24 @@ Place this at `/opt/containers/soft-serve/hooks/post-receive` (chmod +x):
 
 ```sh
 #!/bin/sh
+set -eu
 
 while read -r OLD NEW REF; do
     REPO=$(basename "$PWD" .git)
-    curl -s -X POST "http://pipe:9000/run" \
+    curl -fsS -X POST "http://pipe:9000/run" \
         -H "Content-Type: application/json" \
         -d "{\"repo\":\"$REPO\",\"ref\":\"$REF\",\"old\":\"$OLD\",\"new\":\"$NEW\"}"
 done
 ```
+
+### Optional Gotify notifications
+
+When `--gotify-endpoint` is set, `pipe` can emit minimal notifications:
+
+- `--gotify-token <token>`: app token sent as `X-Gotify-Key`
+- `--gotify-on all` (default): notify success and failure
+- `--gotify-on fail`: notify only failed runs
+- `--gotify-priority <n>`: set Gotify message priority
 
 ### Compose service
 
@@ -175,7 +233,20 @@ pipe:
     - "127.0.0.1:9000:9000"
   volumes:
     - "/opt/containers/pipe/workdir:/tmp/pipe:Z"
-  command: ["server", "--clone", "http://soft-serve:23232"]
+  command:
+    - "server"
+    - "--clone"
+    - "http://soft-serve:23232"
+    - "--workdir"
+    - "/tmp/pipe"
+    - "--gotify-endpoint"
+    - "${PIPE_GOTIFY_ENDPOINT}"
+    - "--gotify-token"
+    - "${PIPE_GOTIFY_TOKEN}"
+    - "--gotify-priority"
+    - "5"
+    - "--gotify-on"
+    - "all"
 ```
 
 ---
@@ -248,6 +319,8 @@ See the [`examples/`](./examples/) directory:
 | File                  | Demonstrates                                        |
 | --------------------- | --------------------------------------------------- |
 | `go-project.pipe.yml` | Parallel lint + test, build, deploy                 |
+| `rust-project.pipe.yml` | cargo fmt + clippy, test, release build, deploy   |
+| `deno-project.pipe.yml` | deno fmt + lint, test, compile, deploy             |
 | `gpg-sign.pipe.yml`   | GPG-signing a release binary                        |
 | `attest.pipe.yml`     | SLSA provenance + cosign attestation                |
 | `artifacts.pipe.yml`  | Collecting, hashing, and publishing build artifacts |

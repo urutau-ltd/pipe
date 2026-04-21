@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
+
+var version = "dev"
 
 const helpText = `pipe — lightweight CI runner for soft-serve and local machines
 
@@ -39,7 +42,7 @@ func main() {
 	case "server":
 		serverCommand(args)
 	case "version":
-		fmt.Println("pipe v0.1.0")
+		fmt.Printf("pipe %s\n", version)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %q\n\n", cmd)
 		fmt.Fprint(os.Stderr, helpText)
@@ -50,9 +53,9 @@ func main() {
 // runCommand handles 'pipe run [flags]'
 func runCommand(args []string) {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
-	file   := fs.String("file", ".pipe.yml", "pipeline file name")
-	step   := fs.String("step", "", "run a single named step only")
-	dir    := fs.String("dir", ".", "repository directory")
+	file := fs.String("file", ".pipe.yml", "pipeline file name")
+	step := fs.String("step", "", "run a single named step only")
+	dir := fs.String("dir", ".", "repository directory")
 	branch := fs.String("branch", "", "branch name for step filtering (e.g. main)")
 
 	fs.Usage = func() {
@@ -101,10 +104,14 @@ func runCommand(args []string) {
 // serverCommand handles 'pipe server [flags]'
 func serverCommand(args []string) {
 	fs := flag.NewFlagSet("server", flag.ExitOnError)
-	port    := fs.Int("port", 9000, "listen port")
-	clone   := fs.String("clone", "http://soft-serve:23232", "git base URL for cloning repos")
+	port := fs.Int("port", 9000, "listen port")
+	clone := fs.String("clone", "http://soft-serve:23232", "git base URL for cloning repos")
 	workdir := fs.String("workdir", "/tmp/pipe", "working directory for clones and logs")
-	file    := fs.String("file", ".pipe.yml", "pipeline file name to look for in each repo")
+	file := fs.String("file", ".pipe.yml", "pipeline file name to look for in each repo")
+	gotifyEndpoint := fs.String("gotify-endpoint", "", "optional Gotify endpoint (e.g. https://gotify.local/message)")
+	gotifyToken := fs.String("gotify-token", "", "optional Gotify app token (sent as X-Gotify-Key)")
+	gotifyPriority := fs.Int("gotify-priority", 5, "Gotify priority (when notifications are enabled)")
+	gotifyOn := fs.String("gotify-on", "all", "Gotify mode: all or fail")
 
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: pipe server [flags]")
@@ -113,10 +120,20 @@ func serverCommand(args []string) {
 	}
 	_ = fs.Parse(args)
 
+	on := strings.ToLower(strings.TrimSpace(*gotifyOn))
+	if on != "fail" && on != "all" {
+		fmt.Fprintf(os.Stderr, "error: invalid --gotify-on value %q (allowed: fail, all)\n", *gotifyOn)
+		os.Exit(2)
+	}
+
 	StartServer(ServerConfig{
-		Port:         *port,
-		CloneBaseURL: *clone,
-		WorkDir:      *workdir,
-		PipelineFile: *file,
+		Port:           *port,
+		CloneBaseURL:   *clone,
+		WorkDir:        *workdir,
+		PipelineFile:   *file,
+		GotifyEndpoint: *gotifyEndpoint,
+		GotifyToken:    *gotifyToken,
+		GotifyPriority: *gotifyPriority,
+		GotifyOn:       on,
 	})
 }

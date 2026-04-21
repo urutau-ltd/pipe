@@ -2,8 +2,11 @@ BINARY  := pipe
 IMAGE   := pipe
 VERSION := $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
 LDFLAGS := -ldflags="-s -w -X main.version=$(VERSION)"
+PREFIX  ?= $(HOME)/.local
+BINDIR  ?= $(PREFIX)/bin
+INSTALL_PATH ?= $(BINDIR)/$(BINARY)
 
-.PHONY: all build test vet image demo demo-local clean
+.PHONY: all build install-local test vet image demo demo-local clean
 
 all: vet test build
 
@@ -12,6 +15,13 @@ build:
 	@mkdir -p dist
 	CGO_ENABLED=0 go build $(LDFLAGS) -o dist/$(BINARY) .
 	@echo "==> built dist/$(BINARY) ($(VERSION))"
+
+## install-local — compile and install to ~/.local/bin/pipe (CGO disabled)
+install-local:
+	@mkdir -p "$(dir $(INSTALL_PATH))"
+	CGO_ENABLED=0 go build $(LDFLAGS) -o "$(INSTALL_PATH)" .
+	@chmod 0755 "$(INSTALL_PATH)"
+	@echo "==> installed $(INSTALL_PATH) ($(VERSION))"
 
 ## test — run unit tests
 ## -race requires CGO — disabled automatically on musl/Guix

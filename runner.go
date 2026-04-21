@@ -185,7 +185,7 @@ func runParallelGroup(items []maybeStep, dir string, env map[string]string, bran
 // runStep executes a step's shell script in dir, streaming output to out.
 // set -euo pipefail so any command failure exits the step immediately.
 func runStep(s Step, dir string, env map[string]string, out io.Writer) error {
-	cmd := exec.Command("/bin/sh", "-c", "set -euo pipefail\n"+s.Run)
+	cmd := exec.Command("/bin/bash", "-c", "set -euo pipefail\n"+s.Run)
 	cmd.Dir = dir
 	cmd.Stdout = out
 	cmd.Stderr = out
