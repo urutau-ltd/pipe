@@ -21,6 +21,7 @@ import (
 const (
 	runBodyLimitBytes       = 64 << 10
 	defaultJobQueueSize     = 32
+	maxPipelinesPerRequest  = 16
 	serverReadTimeout       = 10 * time.Second
 	serverReadHeaderTimeout = 5 * time.Second
 	serverWriteTimeout      = 30 * time.Second
@@ -36,6 +37,7 @@ type ServerConfig struct {
 	CloneBaseURL   string
 	WorkDir        string
 	PipelineFile   string
+	ActionsURL     string
 	GotifyEndpoint string
 	GotifyToken    string
 	GotifyPriority int
@@ -43,11 +45,12 @@ type ServerConfig struct {
 }
 
 type pushPayload struct {
-	Repo     string `json:"repo"`
-	Ref      string `json:"ref"`
-	Old      string `json:"old"`
-	New      string `json:"new"`
-	Pipeline string `json:"pipeline,omitempty"`
+	Repo      string   `json:"repo"`
+	Ref       string   `json:"ref"`
+	Old       string   `json:"old"`
+	New       string   `json:"new"`
+	Pipeline  string   `json:"pipeline,omitempty"`
+	Pipelines []string `json:"pipelines,omitempty"`
 }
 
 type job struct {
@@ -132,24 +135,41 @@ func StartServer(cfg ServerConfig) {
 			log.Printf("pipe: rejected invalid ref %q", p.Ref)
 			return
 		}
-		pipelineFile, err := resolveRequestedPipeline(cfg.PipelineFile, p.Pipeline)
+		pipelineFiles, err := resolveRequestedPipelines(cfg.PipelineFile, p.Pipeline, p.Pipelines)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("invalid pipeline: %v", err), http.StatusBadRequest)
-			log.Printf("pipe: rejected invalid pipeline %q", p.Pipeline)
+			log.Printf("pipe: rejected invalid pipeline payload repo=%q pipeline=%q pipelines=%v", p.Repo, p.Pipeline, p.Pipelines)
 			return
 		}
 
 		p.Repo = repoName
-		logName := fmt.Sprintf("%s-%d.log", repoName, time.Now().UnixMilli())
-		logPath := filepath.Join(cfg.WorkDir, "logs", logName)
-		select {
-		case jobs <- job{payload: p, logPath: logPath, pipelineFile: pipelineFile}:
-			w.WriteHeader(http.StatusAccepted)
-			fmt.Fprintf(w, "queued  repo=%s ref=%s pipeline=%s log=%s\n", p.Repo, p.Ref, pipelineFile, logName)
-			log.Printf("pipe: queued  repo=%s ref=%s pipeline=%s", p.Repo, p.Ref, pipelineFile)
-		default:
-			http.Error(w, "queue full", http.StatusServiceUnavailable)
+		var queued, requested int
+		var logNames []string
+		requested = len(pipelineFiles)
+
+		for idx, pipelineFile := range pipelineFiles {
+			logName := buildPipelineLogName(repoName, pipelineFile, idx)
+			logPath := filepath.Join(cfg.WorkDir, "logs", logName)
+			select {
+			case jobs <- job{payload: p, logPath: logPath, pipelineFile: pipelineFile}:
+				queued++
+				logNames = append(logNames, logName)
+				log.Printf("pipe: queued  repo=%s ref=%s pipeline=%s", p.Repo, p.Ref, pipelineFile)
+			default:
+				if queued == 0 {
+					http.Error(w, "queue full", http.StatusServiceUnavailable)
+					return
+				}
+				w.WriteHeader(http.StatusAccepted)
+				fmt.Fprintf(w, "partially queued  repo=%s ref=%s queued=%d requested=%d logs=%s\n",
+					p.Repo, p.Ref, queued, requested, strings.Join(logNames, ","))
+				return
+			}
 		}
+
+		w.WriteHeader(http.StatusAccepted)
+		fmt.Fprintf(w, "queued  repo=%s ref=%s pipelines=%d logs=%s\n",
+			p.Repo, p.Ref, queued, strings.Join(logNames, ","))
 	})
 
 	app.GET("/health", func(w http.ResponseWriter, _ *http.Request) {
@@ -181,6 +201,7 @@ func processJob(j job, cfg ServerConfig) {
 	if pipelineFile == "" {
 		pipelineFile = cfg.PipelineFile
 	}
+	actionsURL := strings.TrimSpace(cfg.ActionsURL)
 	defer func() {
 		if err := notifyGotify(cfg, p, pipelineFile, branch, commitSHA, status, detail, logName); err != nil {
 			log.Printf("pipe: gotify notify failed: %v", err)
@@ -239,6 +260,9 @@ func processJob(j job, cfg ServerConfig) {
 	}
 
 	commitSHA = resolveCommit(repoDir)
+	if actionsURL != "" {
+		logf("actions  url=%s", actionsURL)
+	}
 
 	pipeline, err := LoadPipeline(repoDir, pipelineFile)
 	if err != nil {
@@ -248,17 +272,22 @@ func processJob(j job, cfg ServerConfig) {
 		return
 	}
 
+	envMap := map[string]string{
+		"PIPE_REPO":     p.Repo,
+		"PIPE_BRANCH":   branch,
+		"PIPE_COMMIT":   commitSHA,
+		"PIPE_REF":      p.Ref,
+		"PIPE_PIPELINE": pipelineFile,
+	}
+	if actionsURL != "" {
+		envMap["PIPE_ACTIONS_URL"] = actionsURL
+	}
+
 	results := RunPipeline(pipeline, RunOptions{
 		Dir:    repoDir,
 		Branch: branch,
 		Output: out,
-		Env: map[string]string{
-			"PIPE_REPO":     p.Repo,
-			"PIPE_BRANCH":   branch,
-			"PIPE_COMMIT":   commitSHA,
-			"PIPE_REF":      p.Ref,
-			"PIPE_PIPELINE": pipelineFile,
-		},
+		Env:    envMap,
 	})
 
 	if HasFailure(results) {
@@ -396,6 +425,49 @@ func resolveRequestedPipeline(defaultFile, selector string) (string, error) {
 		return defaultFile, nil
 	}
 	return pipelineFileFromSelector(selector)
+}
+
+func resolveRequestedPipelines(defaultFile, selector string, selectors []string) ([]string, error) {
+	if strings.TrimSpace(selector) != "" && len(selectors) > 0 {
+		return nil, fmt.Errorf("use either pipeline or pipelines, not both")
+	}
+
+	if len(selectors) > 0 {
+		if len(selectors) > maxPipelinesPerRequest {
+			return nil, fmt.Errorf("too many pipelines requested (max %d)", maxPipelinesPerRequest)
+		}
+		out := make([]string, 0, len(selectors))
+		seen := make(map[string]struct{}, len(selectors))
+		for _, sel := range selectors {
+			pf, err := pipelineFileFromSelector(sel)
+			if err != nil {
+				return nil, err
+			}
+			if _, ok := seen[pf]; ok {
+				continue
+			}
+			seen[pf] = struct{}{}
+			out = append(out, pf)
+		}
+		if len(out) == 0 {
+			return nil, fmt.Errorf("pipelines list is empty")
+		}
+		return out, nil
+	}
+
+	pf, err := resolveRequestedPipeline(defaultFile, selector)
+	if err != nil {
+		return nil, err
+	}
+	return []string{pf}, nil
+}
+
+func buildPipelineLogName(repoName, pipelineFile string, idx int) string {
+	label := strings.TrimSuffix(filepath.Base(pipelineFile), filepath.Ext(pipelineFile))
+	if label == "" {
+		label = "pipeline"
+	}
+	return fmt.Sprintf("%s-%s-%d-%d.log", repoName, label, time.Now().UnixNano(), idx)
 }
 
 func pipelineFileFromSelector(selector string) (string, error) {

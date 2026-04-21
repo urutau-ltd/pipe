@@ -112,6 +112,75 @@ func TestResolveRequestedPipeline(t *testing.T) {
 	}
 }
 
+func TestResolveRequestedPipelines(t *testing.T) {
+	t.Run("default pipeline", func(t *testing.T) {
+		got, err := resolveRequestedPipelines(".pipe.yml", "", nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(got) != 1 || got[0] != ".pipe.yml" {
+			t.Fatalf("unexpected pipelines: %#v", got)
+		}
+	})
+
+	t.Run("single selector", func(t *testing.T) {
+		got, err := resolveRequestedPipelines(".pipe.yml", "ci", nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(got) != 1 || got[0] != ".pipe/ci.yml" {
+			t.Fatalf("unexpected pipelines: %#v", got)
+		}
+	})
+
+	t.Run("multiple selectors dedupe preserve order", func(t *testing.T) {
+		got, err := resolveRequestedPipelines(".pipe.yml", "", []string{"ci", "release.yml", "ci", "nightly"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		want := []string{".pipe/ci.yml", ".pipe/release.yml", ".pipe/nightly.yml"}
+		if len(got) != len(want) {
+			t.Fatalf("unexpected length: got=%d want=%d (%#v)", len(got), len(want), got)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("unexpected pipelines[%d]: got=%q want=%q", i, got[i], want[i])
+			}
+		}
+	})
+
+	t.Run("reject mixed pipeline and pipelines", func(t *testing.T) {
+		_, err := resolveRequestedPipelines(".pipe.yml", "ci", []string{"release"})
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		if !strings.Contains(err.Error(), "either pipeline or pipelines") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("reject invalid selector in list", func(t *testing.T) {
+		_, err := resolveRequestedPipelines(".pipe.yml", "", []string{"ci", "../oops"})
+		if err == nil {
+			t.Fatal("expected error")
+		}
+	})
+
+	t.Run("reject too many", func(t *testing.T) {
+		selectors := make([]string, maxPipelinesPerRequest+1)
+		for i := range selectors {
+			selectors[i] = "ci"
+		}
+		_, err := resolveRequestedPipelines(".pipe.yml", "", selectors)
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		if !strings.Contains(err.Error(), "too many pipelines") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+}
+
 func TestShouldNotifyGotify(t *testing.T) {
 	cfg := ServerConfig{GotifyEndpoint: "https://gotify.local/message"}
 

@@ -185,7 +185,11 @@ func runParallelGroup(items []maybeStep, dir string, env map[string]string, bran
 // runStep executes a step's shell script in dir, streaming output to out.
 // set -euo pipefail so any command failure exits the step immediately.
 func runStep(s Step, dir string, env map[string]string, out io.Writer) error {
-	cmd := exec.Command("/bin/bash", "-c", "set -euo pipefail\n"+s.Run)
+	shell, err := exec.LookPath("bash")
+	if err != nil {
+		return fmt.Errorf("bash not found in PATH: %w", err)
+	}
+	cmd := exec.Command(shell, "-c", buildStepScript(s.Run, env))
 	cmd.Dir = dir
 	cmd.Stdout = out
 	cmd.Stderr = out
@@ -195,6 +199,48 @@ func runStep(s Step, dir string, env map[string]string, out io.Writer) error {
 	}
 	return cmd.Run()
 }
+
+func buildStepScript(run string, env map[string]string) string {
+	var sb strings.Builder
+	sb.WriteString("set -euo pipefail\n")
+	if strings.TrimSpace(env["PIPE_ACTIONS_URL"]) != "" {
+		sb.WriteString(pipeActionShellFunc)
+		sb.WriteString("\n")
+	}
+	sb.WriteString(run)
+	return sb.String()
+}
+
+const pipeActionShellFunc = `pipe_action() {
+  if [ "$#" -lt 1 ]; then
+    echo "pipe_action: usage: pipe_action <path> [args...]" >&2
+    return 2
+  fi
+  if [ -z "${PIPE_ACTIONS_URL:-}" ]; then
+    echo "pipe_action: PIPE_ACTIONS_URL is empty" >&2
+    return 2
+  fi
+
+  local action_path="$1"
+  shift || true
+
+  case "$action_path" in
+    ""|/*|*..*|*//*)
+      echo "pipe_action: invalid action path: $action_path" >&2
+      return 2
+      ;;
+  esac
+
+  local base="${PIPE_ACTIONS_URL%/}"
+  local tmp
+  tmp="$(mktemp)"
+  trap 'rm -f "$tmp"' RETURN
+
+  curl -fsSL "${base}/${action_path}" -o "$tmp"
+  chmod +x "$tmp"
+  "$tmp" "$@"
+}
+`
 
 // stripBranch converts "refs/heads/main" → "main".
 func stripBranch(ref string) string {

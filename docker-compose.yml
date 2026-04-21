@@ -7,4 +7,11 @@ services:
       - "127.0.0.1:9000:9000"
     volumes:
       - "./pipe/workdir:/tmp/pipe:Z"
-    command: ["server", "--clone", "http://soft-serve:23232"]
+    command:
+      - "server"
+      - "--clone"
+      - "http://soft-serve:23232"
+      - "--workdir"
+      - "/tmp/pipe"
+      - "--actions-url"
+      - "${PIPE_ACTIONS_URL:-}"

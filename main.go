@@ -125,6 +125,7 @@ func serverCommand(args []string) {
 	clone := fs.String("clone", "http://soft-serve:23232", "git base URL for cloning repos")
 	workdir := fs.String("workdir", "/tmp/pipe", "working directory for clones and logs")
 	file := fs.String("file", ".pipe.yml", "pipeline file name to look for in each repo")
+	actionsURL := fs.String("actions-url", "", "optional base URL for shared actions (e.g. raw.githubusercontent.com/.../actions)")
 	gotifyEndpoint := fs.String("gotify-endpoint", "", "optional Gotify endpoint (e.g. https://gotify.local/message)")
 	gotifyToken := fs.String("gotify-token", "", "optional Gotify app token (sent as X-Gotify-Key)")
 	gotifyPriority := fs.Int("gotify-priority", 5, "Gotify priority (when notifications are enabled)")
@@ -148,6 +149,7 @@ func serverCommand(args []string) {
 		CloneBaseURL:   *clone,
 		WorkDir:        *workdir,
 		PipelineFile:   *file,
+		ActionsURL:     *actionsURL,
 		GotifyEndpoint: *gotifyEndpoint,
 		GotifyToken:    *gotifyToken,
 		GotifyPriority: *gotifyPriority,

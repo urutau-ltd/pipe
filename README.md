@@ -7,8 +7,8 @@
 Stupidly Light CI runner for
 [`soft-serve`](https://github.com/charmbracelet/soft-serve) and local machines.
 
-Single binary. No database. No API keys. PIpeline defined as `.pipe.yml` file at
-the root of each repository.
+Single binary. No database. No API keys. Pipeline defined as `.pipe.yml` (or
+`.pipe/*.yml`) in each repository.
 
 Two commands only. No more:
 
@@ -96,6 +96,8 @@ reflect the push event. In local mode they reflect the current git state.
 | `PIPE_BRANCH` | Branch name (e.g. `main`)             |
 | `PIPE_COMMIT` | Short commit SHA                      |
 | `PIPE_REF`    | Full git ref (e.g. `refs/heads/main`) |
+| `PIPE_PIPELINE` | Pipeline file used (e.g. `.pipe/ci.yml`) |
+| `PIPE_ACTIONS_URL` | Base URL for shared actions (if configured) |
 
 Pipeline-level `env:` keys are also available, overridable by the above.
 
@@ -187,8 +189,8 @@ pipe run --pipeline release --branch main
 pipe run --pipeline nightly --branch main
 ```
 
-Server mode uses a single runner. Send `"pipeline":"ci"` (or release/nightly) in
-the webhook payload and `pipe` resolves `.pipe/<pipeline>.yml`.
+Server mode uses a single runner. Send `"pipeline":"ci"` for one pipeline, or
+`"pipelines":["ci","release"]` to run several in one push.
 
 ---
 
@@ -199,6 +201,7 @@ pipe server                                     # :9000, clone from http://soft-
 pipe server --port 8080
 pipe server --clone ssh://git.example.com:23231
 pipe server --workdir /var/lib/pipe
+pipe server --actions-url "https://raw.githubusercontent.com/acme/pipe-actions/main"
 pipe server --gotify-endpoint "https://gotify.local/message" --gotify-token "$GOTIFY_TOKEN"
 pipe server --gotify-endpoint "https://gotify.local/message" --gotify-token "$GOTIFY_TOKEN" --gotify-on fail
 ```
@@ -224,12 +227,13 @@ pipe server --gotify-endpoint "https://gotify.local/message" --gotify-token "$GO
   "ref": "refs/heads/main",
   "old": "abc1234",
   "new": "def5678",
-  "pipeline": "ci"
+  "pipeline": "ci",
+  "pipelines": ["ci", "release"]
 }
 ```
 
-`pipeline` is optional. If omitted, server uses the default file configured with
-`--file` (default `.pipe.yml`).
+Use either `pipeline` or `pipelines` (not both). If neither is sent, server
+uses the default file configured with `--file` (default `.pipe.yml`).
 
 ### soft-serve post-receive hook
 
@@ -249,7 +253,7 @@ done
 
 ### soft-serve hook for many pipelines
 
-Single-runner example selecting `.pipe/*.yml` by branch:
+Single-runner example selecting one or many `.pipe/*.yml` files by branch:
 
 ```sh
 #!/bin/sh
@@ -258,20 +262,25 @@ set -eu
 while read -r OLD NEW REF; do
     REPO=$(basename "$PWD" .git)
     case "$REF" in
-      refs/heads/nightly) PIPELINE="nightly" ;;
-      refs/heads/main|refs/heads/release)
-        PIPELINE="release"
-      ;;
+      refs/heads/main)
+        PIPELINES='["ci","release"]'
+        ;;
+      refs/heads/nightly)
+        PIPELINES='["nightly"]'
+        ;;
       *)
-        PIPELINE="ci"
-      ;;
+        PIPELINES='["ci"]'
+        ;;
     esac
 
     curl -fsS -X POST "http://pipe:9000/run" \
       -H "Content-Type: application/json" \
-      -d "{\"repo\":\"$REPO\",\"ref\":\"$REF\",\"old\":\"$OLD\",\"new\":\"$NEW\",\"pipeline\":\"$PIPELINE\"}"
+      -d "{\"repo\":\"$REPO\",\"ref\":\"$REF\",\"old\":\"$OLD\",\"new\":\"$NEW\",\"pipelines\":$PIPELINES}"
 done
 ```
+
+That is usually enough for one `pipe` instance to cover all repositories and
+all workflow types (`ci`, `release`, `nightly`, etc.).
 
 ### Optional Gotify notifications
 
@@ -299,6 +308,8 @@ pipe:
     - "http://soft-serve:23232"
     - "--workdir"
     - "/tmp/pipe"
+    - "--actions-url"
+    - "${PIPE_ACTIONS_URL:-}"
     - "--gotify-endpoint"
     - "${PIPE_GOTIFY_ENDPOINT}"
     - "--gotify-token"
@@ -321,57 +332,64 @@ visible in [Dozzle](https://dozzle.dev).
 
 ## Pipe Actions
 
-If you miss GitHub Actions, you can do your own "actions" for `pipe`.
+You can reuse actions without derived images or bind mounts.
 
-### Action Repositories
+### Shared actions by URL (GitHub/Codeberg)
 
-Use a dedicated repo with reusable scripts and call them from `.pipe/*.yml`:
+Host executable scripts in a repo (for example `go/test.sh`,
+`release/publish.sh`) and expose raw files.
 
-```yaml
-- name: action-test-go
-  run: ./actions/go/test.sh
-
-- name: action-release
-  branches: [main]
-  run: ./actions/release/publish.sh
-```
-
-### Derivating images
-
-Using `pipe` as the base image:
+Start server with a base URL:
 
 ```bash
-pipe-base          (git, curl, ssh)
-pipe-go            (+ go toolchain, golangci-lint)
-pipe-rust          (+ rustup, cargo, clippy)
-pipe-deno          (+ deno)
-pipe-release       (+ cosign, syft, gpg)
-pipe-deploy        (+ kubectl, helm, ssh)
+pipe server --actions-url "https://raw.githubusercontent.com/acme/pipe-actions/main"
+# or Codeberg raw endpoint
+# pipe server --actions-url "https://codeberg.org/acme/pipe-actions/raw/branch/main"
 ```
 
-Then choose image by pipeline type (`ci`, `release`, `nightly`) so each run has
-only the tools it needs.
-
-### Remote scripts (when you accept the risk)
-
-> [!WARNING]
-> I think I don't need to tell you why this is kind of a bad idea in the first
-> place. If you happen to not know, it's a terrible idea to run arbitrary
-> internet scripts with curl-into-sh.
-
-If you still want remote scripts, pin versions and verify checksums:
+Use those scripts in pipelines:
 
 ```yaml
-- name: deploy-script
-  run: |
-    curl -fsSLo /tmp/deploy.sh https://example.com/actions/deploy-v1.2.3.sh
-    echo "b7f9...  /tmp/deploy.sh" | sha256sum -c -
-    sh /tmp/deploy.sh
+steps:
+  - name: test
+    run: pipe_action go/test.sh
+
+  - name: release
+    branches: [main]
+    run: pipe_action release/publish.sh v1.2.3
+```
+
+`pipe_action <path> [args...]` downloads `${PIPE_ACTIONS_URL}/<path>` with
+`curl -fsSL` and executes it.
+
+Security baseline:
+- pin immutable URLs when possible (commit SHA/tag, not moving branches)
+- keep the action repo private/internal when appropriate
+- treat actions like code dependencies (review and version them)
+
+### Copy-paste fallback (no network actions)
+
+For teams that prefer zero remote scripts, keep reusable shell blocks inside
+YAML anchors and copy between repos.
+
+```yaml
+x-go-vet-run: &go_vet_run |
+  go vet ./...
+
+x-go-test-run: &go_test_run |
+  go test ./...
+
+steps:
+  - name: go-vet
+    run: *go_vet_run
+
+  - name: go-test
+    run: *go_test_run
 ```
 
 ### YAML Anchors
 
-Use anchors for policy blocks and reusable command blocks.
+Use anchors for policy blocks and reusable action calls.
 
 ```yaml
 x-quality: &quality
@@ -381,24 +399,21 @@ x-quality: &quality
 x-release-only: &release_only
   branches: [main, release]
 
-x-go-vet-run: &go_vet_run |
-  go vet ./...
-
-x-go-test-run: &go_test_run |
-  go test ./...
+x-go-vet-action: &go_vet_action pipe_action go/vet.sh
+x-go-test-action: &go_test_action pipe_action go/test.sh
 
 steps:
   - name: go-vet
     <<: *quality
-    run: *go_vet_run
+    run: *go_vet_action
 
   - name: go-test
     <<: *quality
-    run: *go_test_run
+    run: *go_test_action
 
   - name: release-upload
     <<: *release_only
-    run: ./actions/release/upload.sh
+    run: pipe_action release/upload.sh
 ```
 
 ---
