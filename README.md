@@ -477,8 +477,6 @@ pipe:
 If you use Podman instead of Docker, mount the Podman socket and pass
 `--engine podman --socket /path/to/podman.sock`.
 
----
-
 ## Logs
 
 In server mode, each run writes a log file to
