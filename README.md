@@ -122,8 +122,6 @@ pass `--branch`:
 pipe run --branch main
 ```
 
----
-
 ## Environment variables
 
 `pipe` injects the following variables into every step. In server mode these
