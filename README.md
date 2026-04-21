@@ -79,8 +79,8 @@ steps:
     run: cargo check
 ```
 
-Some images do not add toolchain binaries to `PATH` by default. When needed,
-set `env.PATH` explicitly in the pipeline.
+Some images do not add toolchain binaries to `PATH` by default. When needed, set
+`env.PATH` explicitly in the pipeline.
 
 ### Parallel steps
 
@@ -128,17 +128,17 @@ pipe run --branch main
 `pipe` injects the following variables into every step. In server mode these
 reflect the push event. In local mode they reflect the current git state.
 
-| Variable      | Value                                 |
-| ------------- | ------------------------------------- |
-| `PIPE_REPO`   | Repository name                       |
-| `PIPE_BRANCH` | Branch name (e.g. `main`)             |
-| `PIPE_COMMIT` | Short commit SHA                      |
-| `PIPE_REF`    | Full git ref (e.g. `refs/heads/main`) |
-| `PIPE_PIPELINE` | Pipeline file used (e.g. `.pipe/ci.yml`) |
-| `PIPE_ACTIONS_URL` | Base URL for shared actions (if configured) |
-| `PIPE_EXECUTOR_MODE` | Effective executor mode (`auto`, `container`, `host`) |
-| `PIPE_CONTAINER_ENGINE` | Container runtime selected (`docker` or `podman`) |
-| `PIPE_CONTAINER_SOCKET` | Selected unix socket path (when available) |
+| Variable                | Value                                                 |
+| ----------------------- | ----------------------------------------------------- |
+| `PIPE_REPO`             | Repository name                                       |
+| `PIPE_BRANCH`           | Branch name (e.g. `main`)                             |
+| `PIPE_COMMIT`           | Short commit SHA                                      |
+| `PIPE_REF`              | Full git ref (e.g. `refs/heads/main`)                 |
+| `PIPE_PIPELINE`         | Pipeline file used (e.g. `.pipe/ci.yml`)              |
+| `PIPE_ACTIONS_URL`      | Base URL for shared actions (if configured)           |
+| `PIPE_EXECUTOR_MODE`    | Effective executor mode (`auto`, `container`, `host`) |
+| `PIPE_CONTAINER_ENGINE` | Container runtime selected (`docker` or `podman`)     |
+| `PIPE_CONTAINER_SOCKET` | Selected unix socket path (when available)            |
 
 Pipeline-level `env:` keys are also available, overridable by the above.
 
@@ -327,8 +327,8 @@ pipe server --gotify-endpoint "https://gotify.local/message" --gotify-token "$GO
 }
 ```
 
-Use either `pipeline` or `pipelines` (not both). If neither is sent, server
-uses the default file configured with `--file` (default `.pipe.yml`).
+Use either `pipeline` or `pipelines` (not both). If neither is sent, server uses
+the default file configured with `--file` (default `.pipe.yml`).
 
 ### soft-serve post-receive hook
 
@@ -420,8 +420,8 @@ while read -r OLD NEW REF; do
 done
 ```
 
-That is usually enough for one `pipe` instance to cover all repositories and
-all workflow types (`ci`, `release`, `nightly`, etc.).
+That is usually enough for one `pipe` instance to cover all repositories and all
+workflow types (`ci`, `release`, `nightly`, etc.).
 
 ### Optional Gotify notifications
 
@@ -484,8 +484,7 @@ If you use Podman instead of Docker, mount the Podman socket and pass
 
 In server mode, each run writes a log file to
 `<workdir>/logs/<repo>-<pipeline>-<timestamp>-<index>.log`. All output is also
-streamed to stdout,
-visible in [Dozzle](https://dozzle.dev).
+streamed to stdout, visible in [Dozzle](https://dozzle.dev).
 
 ---
 
@@ -522,6 +521,7 @@ steps:
 `curl -fsSL` and executes it.
 
 Security baseline:
+
 - pin immutable URLs when possible (commit SHA/tag, not moving branches)
 - keep the action repo private/internal when appropriate
 - treat actions like code dependencies (review and version them)
@@ -599,52 +599,28 @@ See the [`examples/`](./examples/) directory:
 `pipe` itself uses `pipe` to test. Look:
 
 ```bash
-$ make build && make demo
-CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=7096b6d" -o dist/pipe .
-==> built dist/pipe (7096b6d)
-==> running pipe against itself inside Podman
-podman run --rm \
-	--name pipe-demo \
-	-v "/home/fplinux/src/pipe:/src:ro,Z" \
-	-e GOPATH=/tmp/go \
-	-e GOCACHE=/tmp/gocache \
-	-e HOME=/tmp \
-	docker.io/library/golang:1.26-alpine \
-	sh -c ' \
-		apk add --no-cache git 2>/dev/null; \
-		cp -r /src /repo; \
-		cd /repo; \
-		go mod download; \
-		go run . run --branch main \
-	'
-( 1/13) Installing brotli-libs (1.2.0-r0)
-( 2/13) Installing c-ares (1.34.6-r0)
-( 3/13) Installing libunistring (1.4.1-r0)
-( 4/13) Installing libidn2 (2.3.8-r0)
-( 5/13) Installing nghttp2-libs (1.68.0-r0)
-( 6/13) Installing nghttp3 (1.13.1-r0)
-( 7/13) Installing libpsl (0.21.5-r3)
-( 8/13) Installing zstd-libs (1.5.7-r2)
-( 9/13) Installing libcurl (8.17.0-r1)
-(10/13) Installing libexpat (2.7.5-r0)
-(11/13) Installing pcre2 (10.47-r0)
-(12/13) Installing git (2.52.0-r0)
-(13/13) Installing git-init-template (2.52.0-r0)
-Executing busybox-1.37.0-r30.trigger
-OK: 20.6 MiB in 30 packages
+$ CC=gcc make demo-local
+go run . run --branch main
 
 ╔══ pipe: pipe ══╗  (parallel ok  cpus=28)
 
-[03:26:48] ⇉  vet
-✓  vet (2.169s)
-[03:26:48] ⇉  test
-?   	github.com/urutau-ltd/pipe	[no test files]
-✓  test (2.187s)
-[03:26:50] ▶  build
-==> pipe v0.1.0
--rwxr-xr-x    1 root     root        6.4M Apr 19 03:26 dist/pipe
-✓  build (546ms)
+[pipe] executor=auto engine=podman socket=/run/user/1000/podman/podman.sock
+[11:15:36] ⇉  vet
+go: downloading gopkg.in/yaml.v2 v2.4.0
+go: downloading codeberg.org/urutau-ltd/aile/v2 v2.1.1
+✓  vet (9.818s)
+[11:15:36] ⇉  test
+go: downloading codeberg.org/urutau-ltd/aile/v2 v2.1.1
+go: downloading gopkg.in/yaml.v2 v2.4.0
+ok  	github.com/urutau-ltd/pipe	1.031s
+✓  test (23.752s)
+[11:15:59] ▶  build
+go: downloading gopkg.in/yaml.v2 v2.4.0
+go: downloading codeberg.org/urutau-ltd/aile/v2 v2.1.1
+==> pipe e39f52c
+-rwxr-xr-x 1 root root 7.1M Apr 21 17:16 dist/pipe
+✓  build (9.592s)
 
 ────────────────────────────────
-  PASSED  passed=3  failed=0  skipped=0  time=4.902s
+  PASSED  passed=3  failed=0  skipped=0  time=43.162s
 ```
