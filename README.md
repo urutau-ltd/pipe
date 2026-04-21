@@ -485,8 +485,6 @@ In server mode, each run writes a log file to
 `<workdir>/logs/<repo>-<pipeline>-<timestamp>-<index>.log`. All output is also
 streamed to stdout, visible in [Dozzle](https://dozzle.dev).
 
----
-
 ## Pipe Actions
 
 You can reuse actions without derived images or bind mounts.
