@@ -10,7 +10,8 @@ Stupidly Light CI runner for
 Single binary. No database. No API keys. Pipeline defined as `.pipe.yml` (or
 `.pipe/*.yml`) in each repository.
 
-Two commands only. No more:
+
+## Usage (CLI)
 
 ```shell
 $ pipe run           # Run pipeline in current project
