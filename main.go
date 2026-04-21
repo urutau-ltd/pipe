@@ -18,16 +18,32 @@ Commands:
 
 Examples:
   pipe run                        # run all steps in current directory
+  pipe run --executor container   # force container execution
   pipe run --step build           # run a single step
   pipe run --branch main          # simulate a branch-filtered run
   pipe run --pipeline ci          # run .pipe/ci.yml
   pipe run --dir /path/to/repo    # run in a specific directory
 
   pipe server                     # listen on :9000, clone via http://soft-serve:23232
+  pipe server --engine docker     # force docker runtime
   pipe server --port 8080 --clone ssh://git.example.com:23231
 
 Use 'pipe <command> --help' for all flags.
 `
+
+type stringSliceFlag []string
+
+func (s *stringSliceFlag) String() string {
+	if s == nil {
+		return ""
+	}
+	return strings.Join(*s, ",")
+}
+
+func (s *stringSliceFlag) Set(v string) error {
+	*s = append(*s, v)
+	return nil
+}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -59,6 +75,14 @@ func runCommand(args []string) {
 	step := fs.String("step", "", "run a single named step only")
 	dir := fs.String("dir", ".", "repository directory")
 	branch := fs.String("branch", "", "branch name for step filtering (e.g. main)")
+	executor := fs.String("executor", "auto", "execution mode: auto, container, host")
+	engine := fs.String("engine", "auto", "container engine: auto, docker, podman")
+	socket := fs.String("socket", "", "optional absolute unix socket path for container engine")
+	image := fs.String("image", "", "default container image (step.image > --image > pipeline image)")
+	isolate := fs.Bool("isolate", true, "run in a temporary isolated workspace")
+	keepWorkdir := fs.Bool("keep-workdir", false, "keep temporary workspace after run (requires --isolate)")
+	var artifacts stringSliceFlag
+	fs.Var(&artifacts, "artifact", "artifact path/pattern to copy back from isolated workspace (repeatable)")
 
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: pipe run [flags]")
@@ -81,10 +105,38 @@ func runCommand(args []string) {
 		pipelineFile = resolved
 	}
 
-	p, err := LoadPipeline(*dir, pipelineFile)
+	origDir := *dir
+	runDir := origDir
+	cleanupWorkspace := func() {}
+	if *isolate {
+		tmpDir, err := createIsolatedWorkspace(origDir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		runDir = tmpDir
+		cleanupWorkspace = func() {
+			if *keepWorkdir {
+				fmt.Fprintf(os.Stderr, "pipe: kept isolated workspace at %s\n", runDir)
+				return
+			}
+			_ = os.RemoveAll(runDir)
+		}
+	}
+	exit := func(code int) {
+		cleanupWorkspace()
+		os.Exit(code)
+	}
+
+	if *keepWorkdir && !*isolate {
+		fmt.Fprintln(os.Stderr, "error: --keep-workdir requires --isolate")
+		exit(2)
+	}
+
+	p, err := LoadPipeline(runDir, pipelineFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+		exit(1)
 	}
 
 	abs := *dir
@@ -100,22 +152,33 @@ func runCommand(args []string) {
 		branchVal = "local"
 	}
 	results := RunPipeline(p, RunOptions{
-		Dir:      *dir,
-		Branch:   branchVal,
-		OnlyStep: *step,
-		Output:   os.Stdout,
+		Dir:             runDir,
+		Branch:          branchVal,
+		OnlyStep:        *step,
+		Output:          os.Stdout,
+		Executor:        *executor,
+		ContainerEngine: *engine,
+		ContainerSocket: *socket,
+		ContainerImage:  *image,
 		Env: map[string]string{
 			"PIPE_REPO":     filepath.Base(abs),
 			"PIPE_BRANCH":   branchVal,
-			"PIPE_COMMIT":   resolveCommit(*dir),
+			"PIPE_COMMIT":   resolveCommit(runDir),
 			"PIPE_REF":      "refs/heads/" + branchVal,
 			"PIPE_PIPELINE": pipelineFile,
 		},
 	})
 
 	if HasFailure(results) {
-		os.Exit(1)
+		exit(1)
 	}
+	if *isolate && len(artifacts) > 0 {
+		if err := exportArtifacts(runDir, origDir, []string(artifacts)); err != nil {
+			fmt.Fprintf(os.Stderr, "error exporting artifacts: %v\n", err)
+			exit(1)
+		}
+	}
+	cleanupWorkspace()
 }
 
 // serverCommand handles 'pipe server [flags]'
@@ -126,6 +189,10 @@ func serverCommand(args []string) {
 	workdir := fs.String("workdir", "/tmp/pipe", "working directory for clones and logs")
 	file := fs.String("file", ".pipe.yml", "pipeline file name to look for in each repo")
 	actionsURL := fs.String("actions-url", "", "optional base URL for shared actions (e.g. raw.githubusercontent.com/.../actions)")
+	executor := fs.String("executor", "auto", "execution mode: auto, container, host")
+	engine := fs.String("engine", "auto", "container engine: auto, docker, podman")
+	socket := fs.String("socket", "", "optional absolute unix socket path for container engine")
+	image := fs.String("image", "", "default container image for server pipeline steps")
 	gotifyEndpoint := fs.String("gotify-endpoint", "", "optional Gotify endpoint (e.g. https://gotify.local/message)")
 	gotifyToken := fs.String("gotify-token", "", "optional Gotify app token (sent as X-Gotify-Key)")
 	gotifyPriority := fs.Int("gotify-priority", 5, "Gotify priority (when notifications are enabled)")
@@ -145,14 +212,18 @@ func serverCommand(args []string) {
 	}
 
 	StartServer(ServerConfig{
-		Port:           *port,
-		CloneBaseURL:   *clone,
-		WorkDir:        *workdir,
-		PipelineFile:   *file,
-		ActionsURL:     *actionsURL,
-		GotifyEndpoint: *gotifyEndpoint,
-		GotifyToken:    *gotifyToken,
-		GotifyPriority: *gotifyPriority,
-		GotifyOn:       on,
+		Port:            *port,
+		CloneBaseURL:    *clone,
+		WorkDir:         *workdir,
+		PipelineFile:    *file,
+		ActionsURL:      *actionsURL,
+		Executor:        *executor,
+		ContainerEngine: *engine,
+		ContainerSocket: *socket,
+		ContainerImage:  *image,
+		GotifyEndpoint:  *gotifyEndpoint,
+		GotifyToken:     *gotifyToken,
+		GotifyPriority:  *gotifyPriority,
+		GotifyOn:        on,
 	})
 }

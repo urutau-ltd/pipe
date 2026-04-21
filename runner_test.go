@@ -31,3 +31,47 @@ func TestBuildStepScript(t *testing.T) {
 		}
 	})
 }
+
+func TestNormalizeExecutorMode(t *testing.T) {
+	tests := []struct {
+		in      string
+		want    string
+		wantErr bool
+	}{
+		{in: "", want: "auto"},
+		{in: "auto", want: "auto"},
+		{in: "container", want: "container"},
+		{in: "host", want: "host"},
+		{in: "weird", wantErr: true},
+	}
+	for _, tc := range tests {
+		got, err := normalizeExecutorMode(tc.in)
+		if tc.wantErr {
+			if err == nil {
+				t.Fatalf("expected error for %q", tc.in)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("unexpected error for %q: %v", tc.in, err)
+		}
+		if got != tc.want {
+			t.Fatalf("unexpected mode for %q: got=%q want=%q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestResolveStepImage(t *testing.T) {
+	p := &Pipeline{Image: "pipeline:img"}
+	step := Step{}
+	if got := resolveStepImage(step, p, ""); got != "pipeline:img" {
+		t.Fatalf("expected pipeline image, got %q", got)
+	}
+	if got := resolveStepImage(step, p, "flag:img"); got != "flag:img" {
+		t.Fatalf("expected flag image, got %q", got)
+	}
+	step.Image = "step:img"
+	if got := resolveStepImage(step, p, "flag:img"); got != "step:img" {
+		t.Fatalf("expected step image, got %q", got)
+	}
+}

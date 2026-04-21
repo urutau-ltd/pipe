@@ -13,6 +13,7 @@ import (
 // Pipeline is the parsed representation of a .pipe.yml file.
 type Pipeline struct {
 	Name  string            `yaml:"name"`
+	Image string            `yaml:"image"`
 	Env   map[string]string `yaml:"env"`
 	Steps []Step            `yaml:"steps"`
 }
@@ -21,6 +22,7 @@ type Pipeline struct {
 type Step struct {
 	Name     string   `yaml:"name"`
 	Run      string   `yaml:"run"`
+	Image    string   `yaml:"image"`
 	Parallel bool     `yaml:"parallel"` // if true, runs concurrently with adjacent parallel steps
 	Branches []string `yaml:"branches"` // if set, only runs on these branches
 }

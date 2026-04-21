@@ -7,11 +7,19 @@ services:
       - "127.0.0.1:9000:9000"
     volumes:
       - "./pipe/workdir:/tmp/pipe:Z"
+      - "/var/run/docker.sock:/var/run/docker.sock"
     command:
       - "server"
       - "--clone"
       - "http://soft-serve:23232"
       - "--workdir"
       - "/tmp/pipe"
+      - "--executor"
+      - "auto"
+      - "--engine"
+      - "auto"
       - "--actions-url"
       - "${PIPE_ACTIONS_URL:-}"
+      # Optional default image for repos without image: in .pipe.yml
+      # - "--image"
+      # - "docker.io/library/golang:1.26-bookworm"

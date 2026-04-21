@@ -17,12 +17,30 @@ $ pipe run           # Run pipeline in current project
 $ pipe server        # Receive pushes from soft-serve and run pipelines
 ```
 
+## Execution Model (v2)
+
+`pipe` is now container-first:
+
+- runtime priority: Docker socket, then Podman socket (rootful/rootless), then
+  local CLI context
+- local runs use an isolated temp workspace by default (`--isolate=true`)
+- host execution still exists for compatibility but is deprecated
+- `--socket` is optional; without it, `docker`/`podman` default context is used
+
+You can force behavior:
+
+```bash
+pipe run --executor container --engine podman
+pipe run --executor host
+```
+
 ## Quick Start
 
 Add `.pipe.yml` to any repository:
 
 ```yml
 name: my-app
+image: docker.io/library/golang:1.26-bookworm
 
 steps:
   - name: test
@@ -43,6 +61,26 @@ run it locally:
 $ cd my-app
 $ pipe run
 ```
+
+### Container images
+
+`image` at top-level applies to all steps. `step.image` overrides per step.
+
+```yaml
+name: polyglot
+image: docker.io/library/golang:1.26-bookworm
+
+steps:
+  - name: go-test
+    run: go test ./...
+
+  - name: rust-check
+    image: docker.io/library/rust:1-bookworm
+    run: cargo check
+```
+
+Some images do not add toolchain binaries to `PATH` by default. When needed,
+set `env.PATH` explicitly in the pipeline.
 
 ### Parallel steps
 
@@ -98,6 +136,9 @@ reflect the push event. In local mode they reflect the current git state.
 | `PIPE_REF`    | Full git ref (e.g. `refs/heads/main`) |
 | `PIPE_PIPELINE` | Pipeline file used (e.g. `.pipe/ci.yml`) |
 | `PIPE_ACTIONS_URL` | Base URL for shared actions (if configured) |
+| `PIPE_EXECUTOR_MODE` | Effective executor mode (`auto`, `container`, `host`) |
+| `PIPE_CONTAINER_ENGINE` | Container runtime selected (`docker` or `podman`) |
+| `PIPE_CONTAINER_SOCKET` | Selected unix socket path (when available) |
 
 Pipeline-level `env:` keys are also available, overridable by the above.
 
@@ -128,6 +169,13 @@ export PATH="$HOME/.local/bin:$PATH"
 # Run all steps
 pipe run
 
+# Force containers (error if no runtime/image available)
+pipe run --executor container
+
+# Choose engine/socket explicitly
+pipe run --engine docker --socket /var/run/docker.sock
+pipe run --engine podman --socket /run/user/1000/podman/podman.sock
+
 # Run in a specific directory
 pipe run --dir /path/to/repo
 
@@ -139,6 +187,22 @@ pipe run --branch main
 
 # Use a non-default pipeline file
 pipe run --file .ci.yml
+```
+
+### Local isolation and artifacts
+
+`pipe run` isolates the repository in a temporary workspace by default, so your
+working tree stays clean.
+
+```bash
+# keep isolated workspace for debugging
+pipe run --keep-workdir
+
+# copy artifacts back to your repo after the run
+pipe run --artifact dist/* --artifact coverage.out
+
+# disable isolation (legacy behavior, not recommended)
+pipe run --isolate=false
 ```
 
 ### Language quickstarts
@@ -201,6 +265,8 @@ pipe server                                     # :9000, clone from http://soft-
 pipe server --port 8080
 pipe server --clone ssh://git.example.com:23231
 pipe server --workdir /var/lib/pipe
+pipe server --executor auto --engine auto
+pipe server --image docker.io/library/golang:1.26-bookworm
 pipe server --actions-url "https://raw.githubusercontent.com/acme/pipe-actions/main"
 pipe server --gotify-endpoint "https://gotify.local/message" --gotify-token "$GOTIFY_TOKEN"
 pipe server --gotify-endpoint "https://gotify.local/message" --gotify-token "$GOTIFY_TOKEN" --gotify-on fail
@@ -302,12 +368,19 @@ pipe:
     - "127.0.0.1:9000:9000"
   volumes:
     - "/opt/containers/pipe/workdir:/tmp/pipe:Z"
+    - "/var/run/docker.sock:/var/run/docker.sock"
   command:
     - "server"
     - "--clone"
     - "http://soft-serve:23232"
     - "--workdir"
     - "/tmp/pipe"
+    - "--executor"
+    - "auto"
+    - "--engine"
+    - "auto"
+    - "--image"
+    - "docker.io/library/golang:1.26-bookworm"
     - "--actions-url"
     - "${PIPE_ACTIONS_URL:-}"
     - "--gotify-endpoint"
@@ -320,12 +393,16 @@ pipe:
     - "all"
 ```
 
+If you use Podman instead of Docker, mount the Podman socket and pass
+`--engine podman --socket /path/to/podman.sock`.
+
 ---
 
 ## Logs
 
 In server mode, each run writes a log file to
-`<workdir>/logs/<repo>-<timestamp>.log`. All output is also streamed to stdout,
+`<workdir>/logs/<repo>-<pipeline>-<timestamp>-<index>.log`. All output is also
+streamed to stdout,
 visible in [Dozzle](https://dozzle.dev).
 
 ---

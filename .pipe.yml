@@ -3,6 +3,10 @@
 # Run in Podman:  make demo
 
 name: pipe
+image: docker.io/library/golang:1.26-bookworm
+
+env:
+  PATH: /usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 steps:
   - name: vet

@@ -11,10 +11,11 @@ RUN CGO_ENABLED=0 go build \
     -o /pipe .
 
 # ─────────────────────────────────────────────────────────
-FROM docker.io/debian/bookworm-slim
+FROM docker.io/library/debian:bookworm-slim
 
 # git is required for clone/pull in server mode
-RUN apt-get update && apt-get install -y --no-install-recommends bash git \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash \
     git \
     curl \
     openssh-client \
@@ -25,7 +26,7 @@ RUN useradd --system --no-create-home --shell /usr/sbin/nologin pipe
 
 RUN mkdir -p /tmp/pipe && chown pipe:pipe /tmp/pipe
 
-COPY --from=builder /out/pipe /usr/local/bin/pipe
+COPY --from=builder /pipe /usr/local/bin/pipe
 
 USER pipe
 

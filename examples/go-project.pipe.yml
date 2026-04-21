@@ -2,12 +2,14 @@
 # A typical Go project: parallel quality checks, then build, then deploy.
 
 name: go-project
+image: docker.io/library/golang:1.26-bookworm
 
 env:
   BINARY_NAME: myapp
   BUILD_DIR: ./dist
   GOOS: linux
   GOARCH: amd64
+  PATH: /usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 steps:
   # ── quality checks run in parallel ────────────────────────────────────────

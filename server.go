@@ -33,15 +33,19 @@ const (
 
 // ServerConfig holds runtime configuration for the webhook server.
 type ServerConfig struct {
-	Port           int
-	CloneBaseURL   string
-	WorkDir        string
-	PipelineFile   string
-	ActionsURL     string
-	GotifyEndpoint string
-	GotifyToken    string
-	GotifyPriority int
-	GotifyOn       string
+	Port            int
+	CloneBaseURL    string
+	WorkDir         string
+	PipelineFile    string
+	ActionsURL      string
+	Executor        string
+	ContainerEngine string
+	ContainerSocket string
+	ContainerImage  string
+	GotifyEndpoint  string
+	GotifyToken     string
+	GotifyPriority  int
+	GotifyOn        string
 }
 
 type pushPayload struct {
@@ -73,6 +77,12 @@ func StartServer(cfg ServerConfig) {
 	}
 	if cfg.GotifyOn == "" {
 		cfg.GotifyOn = "all"
+	}
+	if strings.TrimSpace(cfg.Executor) == "" {
+		cfg.Executor = "auto"
+	}
+	if strings.TrimSpace(cfg.ContainerEngine) == "" {
+		cfg.ContainerEngine = "auto"
 	}
 
 	if err := os.MkdirAll(filepath.Join(cfg.WorkDir, "logs"), 0o755); err != nil {
@@ -179,8 +189,8 @@ func StartServer(cfg ServerConfig) {
 	if cfg.GotifyEndpoint == "" {
 		mode = "off"
 	}
-	log.Printf("pipe: listening on %s  clone=%s  workdir=%s  cpus=%d  gotify=%s",
-		addr, cfg.CloneBaseURL, cfg.WorkDir, runtime.NumCPU(), mode)
+	log.Printf("pipe: listening on %s  clone=%s  workdir=%s  cpus=%d  executor=%s  engine=%s  gotify=%s",
+		addr, cfg.CloneBaseURL, cfg.WorkDir, runtime.NumCPU(), cfg.Executor, cfg.ContainerEngine, mode)
 	log.Fatal(app.Run(context.Background()))
 }
 
@@ -284,10 +294,14 @@ func processJob(j job, cfg ServerConfig) {
 	}
 
 	results := RunPipeline(pipeline, RunOptions{
-		Dir:    repoDir,
-		Branch: branch,
-		Output: out,
-		Env:    envMap,
+		Dir:             repoDir,
+		Branch:          branch,
+		Output:          out,
+		Executor:        cfg.Executor,
+		ContainerEngine: cfg.ContainerEngine,
+		ContainerSocket: cfg.ContainerSocket,
+		ContainerImage:  cfg.ContainerImage,
+		Env:             envMap,
 	})
 
 	if HasFailure(results) {

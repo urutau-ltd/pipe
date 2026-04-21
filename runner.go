@@ -6,7 +6,9 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -21,11 +23,15 @@ type maybeStep struct {
 
 // RunOptions controls pipeline execution.
 type RunOptions struct {
-	Dir      string            // working directory for steps
-	Branch   string            // branch name for step filtering
-	OnlyStep string            // if set, only run this step by name
-	Env      map[string]string // extra env vars merged over pipeline-level env
-	Output   io.Writer         // destination for all output (default: os.Stdout)
+	Dir             string            // working directory for steps
+	Branch          string            // branch name for step filtering
+	OnlyStep        string            // if set, only run this step by name
+	Env             map[string]string // extra env vars merged over pipeline-level env
+	Output          io.Writer         // destination for all output (default: os.Stdout)
+	Executor        string            // auto, container, host
+	ContainerEngine string            // auto, docker, podman
+	ContainerSocket string            // optional unix socket path
+	ContainerImage  string            // default image used when step/pipeline does not set one
 }
 
 // StepResult holds the outcome of a single step.
@@ -75,6 +81,13 @@ func RunPipeline(p *Pipeline, opts RunOptions) []StepResult {
 	var allResults []StepResult
 
 	printHeader(opts.Output, p.Name, canParallel)
+	stepRunner, err := prepareStepRunner(p, opts, env, opts.Output)
+	if err != nil {
+		result := StepResult{Name: "__setup__", Err: err}
+		printStepFail(opts.Output, "__setup__", 0, err)
+		printSummary(opts.Output, []StepResult{result})
+		return []StepResult{result}
+	}
 
 	for _, g := range groups {
 		var groupResults []StepResult
@@ -89,9 +102,9 @@ func RunPipeline(p *Pipeline, opts RunOptions) []StepResult {
 		}
 
 		if g.parallel && canParallel && len(g.steps) > 1 {
-			groupResults = runParallelGroup(candidates, opts.Dir, env, opts.Branch, opts.Output)
+			groupResults = runParallelGroup(candidates, opts.Branch, opts.Output, stepRunner)
 		} else {
-			groupResults = runSequentialGroup(candidates, opts.Dir, env, opts.Branch, opts.Output)
+			groupResults = runSequentialGroup(candidates, opts.Branch, opts.Output, stepRunner)
 		}
 
 		allResults = append(allResults, groupResults...)
@@ -108,7 +121,9 @@ func RunPipeline(p *Pipeline, opts RunOptions) []StepResult {
 
 // ── execution helpers ─────────────────────────────────────────────────────────
 
-func runSequentialGroup(items []maybeStep, dir string, env map[string]string, branch string, out io.Writer) []StepResult {
+type stepRunnerFunc func(step Step, out io.Writer) error
+
+func runSequentialGroup(items []maybeStep, branch string, out io.Writer, run stepRunnerFunc) []StepResult {
 	var results []StepResult
 	for _, item := range items {
 		if item.skipped {
@@ -118,7 +133,7 @@ func runSequentialGroup(items []maybeStep, dir string, env map[string]string, br
 		}
 		printStepStart(out, item.step.Name, false)
 		start := time.Now()
-		err := runStep(item.step, dir, env, out)
+		err := run(item.step, out)
 		dur := time.Since(start)
 		r := StepResult{Name: item.step.Name, Duration: dur, Err: err}
 		results = append(results, r)
@@ -136,7 +151,7 @@ type parallelOut struct {
 	buf    []byte
 }
 
-func runParallelGroup(items []maybeStep, dir string, env map[string]string, branch string, out io.Writer) []StepResult {
+func runParallelGroup(items []maybeStep, branch string, out io.Writer, run stepRunnerFunc) []StepResult {
 	outputs := make([]parallelOut, len(items))
 	var wg sync.WaitGroup
 
@@ -157,7 +172,7 @@ func runParallelGroup(items []maybeStep, dir string, env map[string]string, bran
 			var buf bytes.Buffer
 			printStepStart(&buf, s.Name, true)
 			start := time.Now()
-			err := runStep(s, dir, env, &buf)
+			err := run(s, &buf)
 			dur := time.Since(start)
 			if err != nil {
 				printStepFail(&buf, s.Name, dur, err)
@@ -182,27 +197,141 @@ func runParallelGroup(items []maybeStep, dir string, env map[string]string, bran
 	return results
 }
 
-// runStep executes a step's shell script in dir, streaming output to out.
-// set -euo pipefail so any command failure exits the step immediately.
-func runStep(s Step, dir string, env map[string]string, out io.Writer) error {
+func prepareStepRunner(p *Pipeline, opts RunOptions, env map[string]string, out io.Writer) (stepRunnerFunc, error) {
+	mode, err := normalizeExecutorMode(opts.Executor)
+	if err != nil {
+		return nil, err
+	}
+	env["PIPE_EXECUTOR_MODE"] = mode
+
+	var rt *containerRuntime
+	if mode != "host" {
+		rt, err = detectContainerRuntime(opts.ContainerEngine, opts.ContainerSocket)
+		if err != nil {
+			if mode == "container" {
+				return nil, err
+			}
+			fmt.Fprintf(out, "%s[pipe] container runtime not available, falling back to host: %v%s\n", ansiYellow, err, ansiReset)
+		} else {
+			env["PIPE_CONTAINER_ENGINE"] = rt.Name
+			if rt.SocketPath != "" {
+				env["PIPE_CONTAINER_SOCKET"] = rt.SocketPath
+			}
+			socketLabel := "default context"
+			if rt.SocketPath != "" {
+				socketLabel = rt.SocketPath
+			}
+			fmt.Fprintf(out, "%s[pipe] executor=%s engine=%s socket=%s%s\n", ansiGray, mode, rt.Name, socketLabel, ansiReset)
+		}
+	} else {
+		fmt.Fprintf(out, "%s[pipe] executor=host%s\n", ansiGray, ansiReset)
+	}
+
+	var hostWarnOnce sync.Once
+	return func(step Step, stepOut io.Writer) error {
+		script := buildStepScript(step.Run, env)
+		if rt != nil {
+			image := resolveStepImage(step, p, opts.ContainerImage)
+			if image != "" {
+				return runStepInContainer(*rt, image, opts.Dir, env, script, stepOut)
+			}
+			if mode == "container" {
+				return fmt.Errorf("step %q has no image (set step.image, pipeline image, or --image)", step.Name)
+			}
+		}
+
+		hostWarnOnce.Do(func() {
+			fmt.Fprintf(stepOut, "%s[pipe] host execution is deprecated; prefer container images (pipeline image, step.image, or --image)%s\n", ansiYellow, ansiReset)
+		})
+		return runStepOnHost(opts.Dir, env, script, stepOut)
+	}, nil
+}
+
+func normalizeExecutorMode(mode string) (string, error) {
+	m := strings.ToLower(strings.TrimSpace(mode))
+	if m == "" {
+		m = "auto"
+	}
+	switch m {
+	case "auto", "container", "host":
+		return m, nil
+	default:
+		return "", fmt.Errorf("invalid executor %q (allowed: auto, container, host)", mode)
+	}
+}
+
+func resolveStepImage(step Step, p *Pipeline, defaultImage string) string {
+	if img := strings.TrimSpace(step.Image); img != "" {
+		return img
+	}
+	if img := strings.TrimSpace(defaultImage); img != "" {
+		return img
+	}
+	return strings.TrimSpace(p.Image)
+}
+
+func runStepOnHost(dir string, env map[string]string, script string, out io.Writer) error {
 	shell, err := exec.LookPath("bash")
 	if err != nil {
 		return fmt.Errorf("bash not found in PATH: %w", err)
 	}
-	cmd := exec.Command(shell, "-c", buildStepScript(s.Run, env))
+	cmd := exec.Command(shell, "-c", script)
 	cmd.Dir = dir
 	cmd.Stdout = out
 	cmd.Stderr = out
 	cmd.Env = os.Environ()
-	for k, v := range env {
-		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
+	for _, kv := range envPairs(env) {
+		cmd.Env = append(cmd.Env, kv)
 	}
 	return cmd.Run()
+}
+
+func runStepInContainer(rt containerRuntime, image, dir string, env map[string]string, script string, out io.Writer) error {
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return fmt.Errorf("resolve working dir: %w", err)
+	}
+
+	args := []string{
+		"run",
+		"--rm",
+		"--workdir", "/workspace",
+		"--volume", absDir + ":/workspace",
+	}
+	for _, kv := range envPairs(env) {
+		args = append(args, "--env", kv)
+	}
+	args = append(args, image, "bash", "-lc", script)
+
+	cmd := exec.Command(rt.Binary, args...)
+	cmd.Stdout = out
+	cmd.Stderr = out
+	cmd.Env = os.Environ()
+	if rt.HostEnvKey != "" && rt.HostEnvValue != "" {
+		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", rt.HostEnvKey, rt.HostEnvValue))
+	}
+	return cmd.Run()
+}
+
+func envPairs(env map[string]string) []string {
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	out := make([]string, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, fmt.Sprintf("%s=%s", k, env[k]))
+	}
+	return out
 }
 
 func buildStepScript(run string, env map[string]string) string {
 	var sb strings.Builder
 	sb.WriteString("set -euo pipefail\n")
+	sb.WriteString(pathBootstrapShellSnippet)
+	sb.WriteString("\n")
 	if strings.TrimSpace(env["PIPE_ACTIONS_URL"]) != "" {
 		sb.WriteString(pipeActionShellFunc)
 		sb.WriteString("\n")
@@ -210,6 +339,18 @@ func buildStepScript(run string, env map[string]string) string {
 	sb.WriteString(run)
 	return sb.String()
 }
+
+const pathBootstrapShellSnippet = `
+if [ -d /usr/local/go/bin ]; then
+  export PATH="/usr/local/go/bin:$PATH"
+fi
+if [ -d /root/.cargo/bin ]; then
+  export PATH="/root/.cargo/bin:$PATH"
+fi
+if [ -d /usr/local/cargo/bin ]; then
+  export PATH="/usr/local/cargo/bin:$PATH"
+fi
+`
 
 const pipeActionShellFunc = `pipe_action() {
   if [ "$#" -lt 1 ]; then
