@@ -494,6 +494,8 @@ You can reuse actions without derived images or bind mounts.
 
 ### Shared actions by URL (GitHub/Codeberg)
 
+> Please do not abuse this mechanism on Git instances that are not yours!
+
 Host executable scripts in a repo (for example `go/test.sh`,
 `release/publish.sh`) and expose raw files.
 
