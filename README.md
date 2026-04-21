@@ -169,8 +169,6 @@ pipe run --secret-env GITHUB_TOKEN --secret-env CR_PAT
 pipe run --mask "https://token@github.com"
 ```
 
----
-
 ## Local usage
 
 ### Install locally (CGO disabled)
