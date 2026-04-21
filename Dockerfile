@@ -1,4 +1,4 @@
-# Multi-stage build — final image is ~15MB
+# Multi-stage build
 FROM docker.io/library/golang:1.26-bookworm AS builder
 
 WORKDIR /src
@@ -10,23 +10,28 @@ RUN CGO_ENABLED=0 go build \
     -ldflags="-s -w" \
     -o /pipe .
 
+# Docker CLI from official image (avoids distro lagging packages).
+FROM docker.io/library/docker:cli AS dockercli
+
 # ─────────────────────────────────────────────────────────
-FROM docker.io/library/debian:bookworm-slim
+FROM docker.io/library/almalinux:9-minimal
 
 # git is required for clone/pull in server mode
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN microdnf install -y \
     bash \
     git \
     curl \
-    openssh-client \
+    openssh-clients \
     ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+    shadow-utils \
+    && microdnf clean all
 
 RUN useradd --system --no-create-home --shell /usr/sbin/nologin pipe
 
 RUN mkdir -p /tmp/pipe && chown pipe:pipe /tmp/pipe
 
 COPY --from=builder /pipe /usr/local/bin/pipe
+COPY --from=dockercli /usr/local/bin/docker /usr/local/bin/docker
 
 USER pipe
 

@@ -15,9 +15,11 @@ services:
       - "--workdir"
       - "/tmp/pipe"
       - "--executor"
-      - "auto"
+      - "container"
       - "--engine"
-      - "auto"
+      - "docker"
+      - "--socket"
+      - "/var/run/docker.sock"
       - "--actions-url"
       - "${PIPE_ACTIONS_URL:-}"
       # Optional default image for repos without image: in .pipe.yml

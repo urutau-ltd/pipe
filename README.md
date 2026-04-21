@@ -10,7 +10,6 @@ Stupidly Light CI runner for
 Single binary. No database. No API keys. Pipeline defined as `.pipe.yml` (or
 `.pipe/*.yml`) in each repository.
 
-
 ## Usage (CLI)
 
 ```shell
@@ -449,9 +448,11 @@ pipe:
     - "--workdir"
     - "/tmp/pipe"
     - "--executor"
-    - "auto"
+    - "container"
     - "--engine"
-    - "auto"
+    - "docker"
+    - "--socket"
+    - "/var/run/docker.sock"
     - "--image"
     - "docker.io/library/golang:1.26-bookworm"
     - "--secret-env"
@@ -470,8 +471,9 @@ pipe:
     - "all"
 ```
 
-If you use Podman instead of Docker, mount the Podman socket and pass
-`--engine podman --socket /path/to/podman.sock`.
+For rootless Podman, use your user socket instead (for example
+`/run/user/1000/podman/podman.sock`) and use
+`--engine podman --socket <that-path>`.
 
 ## Logs
 
