@@ -338,11 +338,34 @@ Place this at `/opt/containers/soft-serve/hooks/post-receive` (chmod +x):
 #!/bin/sh
 set -eu
 
+post_json() {
+    url="$1"
+    payload="$2"
+
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsS -X POST "$url" \
+            -H "Content-Type: application/json" \
+            -d "$payload" >/dev/null
+        return 0
+    fi
+
+    if command -v wget >/dev/null 2>&1; then
+        wget -q -O /dev/null \
+            --header="Content-Type: application/json" \
+            --post-data="$payload" \
+            "$url"
+        return 0
+    fi
+
+    echo "pipe hook: curl or wget is required" >&2
+    return 127
+}
+
 while read -r OLD NEW REF; do
     REPO=$(basename "$PWD" .git)
-    curl -fsS -X POST "http://pipe:9000/run" \
-        -H "Content-Type: application/json" \
-        -d "{\"repo\":\"$REPO\",\"ref\":\"$REF\",\"old\":\"$OLD\",\"new\":\"$NEW\"}"
+    PAYLOAD=$(printf '{"repo":"%s","ref":"%s","old":"%s","new":"%s"}' \
+        "$REPO" "$REF" "$OLD" "$NEW")
+    post_json "http://pipe:9000/run" "$PAYLOAD"
 done
 ```
 
@@ -353,6 +376,29 @@ Single-runner example selecting one or many `.pipe/*.yml` files by branch:
 ```sh
 #!/bin/sh
 set -eu
+
+post_json() {
+    url="$1"
+    payload="$2"
+
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsS -X POST "$url" \
+            -H "Content-Type: application/json" \
+            -d "$payload" >/dev/null
+        return 0
+    fi
+
+    if command -v wget >/dev/null 2>&1; then
+        wget -q -O /dev/null \
+            --header="Content-Type: application/json" \
+            --post-data="$payload" \
+            "$url"
+        return 0
+    fi
+
+    echo "pipe hook: curl or wget is required" >&2
+    return 127
+}
 
 while read -r OLD NEW REF; do
     REPO=$(basename "$PWD" .git)
@@ -368,9 +414,9 @@ while read -r OLD NEW REF; do
         ;;
     esac
 
-    curl -fsS -X POST "http://pipe:9000/run" \
-      -H "Content-Type: application/json" \
-      -d "{\"repo\":\"$REPO\",\"ref\":\"$REF\",\"old\":\"$OLD\",\"new\":\"$NEW\",\"pipelines\":$PIPELINES}"
+    PAYLOAD=$(printf '{"repo":"%s","ref":"%s","old":"%s","new":"%s","pipelines":%s}' \
+      "$REPO" "$REF" "$OLD" "$NEW" "$PIPELINES")
+    post_json "http://pipe:9000/run" "$PAYLOAD"
 done
 ```
 
