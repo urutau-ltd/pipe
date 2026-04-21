@@ -285,8 +285,6 @@ pipe run --pipeline nightly --branch main
 Server mode uses a single runner. Send `"pipeline":"ci"` for one pipeline, or
 `"pipelines":["ci","release"]` to run several in one push.
 
----
-
 ## Server mode (soft-serve integration)
 
 ```bash
