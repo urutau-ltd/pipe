@@ -1,0 +1,31 @@
+# examples/multi-ci.pipe.yml
+# Fast CI pipeline for every push/branch.
+
+name: multi-ci
+
+env:
+  GOFLAGS: -mod=readonly
+
+steps:
+  - name: go-vet
+    parallel: true
+    run: go vet ./...
+
+  - name: go-test
+    parallel: true
+    run: go test -count=1 ./...
+
+  - name: shellcheck
+    parallel: true
+    run: |
+      if command -v shellcheck >/dev/null 2>&1; then
+        shellcheck scripts/*.sh
+      else
+        echo "shellcheck not installed, skipping"
+      fi
+
+  - name: build
+    run: |
+      mkdir -p dist
+      CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=$PIPE_COMMIT" -o dist/app .
+      echo "built dist/app"

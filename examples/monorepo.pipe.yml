@@ -1,0 +1,51 @@
+# examples/monorepo.pipe.yml
+# Monorepo pipeline with service-specific checks and shared release step.
+
+name: monorepo
+
+steps:
+  - name: api-test
+    parallel: true
+    run: |
+      cd services/api
+      go test ./...
+
+  - name: web-test
+    parallel: true
+    run: |
+      cd services/web
+      npm ci
+      npm test
+
+  - name: worker-test
+    parallel: true
+    run: |
+      cd services/worker
+      cargo test
+
+  - name: api-build
+    parallel: true
+    run: |
+      cd services/api
+      CGO_ENABLED=0 go build -o ../../dist/api .
+
+  - name: web-build
+    parallel: true
+    run: |
+      cd services/web
+      npm ci
+      npm run build
+
+  - name: worker-build
+    parallel: true
+    run: |
+      cd services/worker
+      cargo build --release
+      cp target/release/worker ../../dist/worker
+
+  - name: package
+    branches: [main]
+    run: |
+      mkdir -p dist
+      tar -czf dist/monorepo-${PIPE_COMMIT}.tar.gz dist
+      ls -lh dist/monorepo-${PIPE_COMMIT}.tar.gz

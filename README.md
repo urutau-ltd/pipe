@@ -160,6 +160,25 @@ pipe run --branch main
 Before running, adjust `env:` values in the copied file (binary name, entrypoint,
 deploy host, etc.) to match your project.
 
+### Many pipelines in one repository
+
+If one repository needs different pipeline goals (fast CI, release, nightly),
+use multiple pipeline files and pick one with `--file`:
+
+```bash
+# fast checks on every push
+pipe run --file .pipe.ci.yml --branch main
+
+# release artifacts/signing
+pipe run --file .pipe.release.yml --branch main
+
+# nightly maintenance/security
+pipe run --file .pipe.nightly.yml --branch main
+```
+
+For server mode, run multiple `pipe server` instances with different `--file`
+values and ports, then call the right endpoint(s) from `soft-serve` hooks.
+
 ---
 
 ## Server mode (soft-serve integration)
@@ -210,6 +229,34 @@ while read -r OLD NEW REF; do
     curl -fsS -X POST "http://pipe:9000/run" \
         -H "Content-Type: application/json" \
         -d "{\"repo\":\"$REPO\",\"ref\":\"$REF\",\"old\":\"$OLD\",\"new\":\"$NEW\"}"
+done
+```
+
+### soft-serve hook for many pipelines
+
+Example with three dedicated runners (`ci`, `release`, `nightly`):
+
+```sh
+#!/bin/sh
+set -eu
+
+while read -r OLD NEW REF; do
+    REPO=$(basename "$PWD" .git)
+    PAYLOAD="{\"repo\":\"$REPO\",\"ref\":\"$REF\",\"old\":\"$OLD\",\"new\":\"$NEW\"}"
+
+    # Always trigger CI
+    curl -fsS -X POST "http://pipe-ci:9000/run" \
+        -H "Content-Type: application/json" \
+        -d "$PAYLOAD"
+
+    # Trigger release runner only for main/release branches
+    case "$REF" in
+      refs/heads/main|refs/heads/release)
+        curl -fsS -X POST "http://pipe-release:9000/run" \
+          -H "Content-Type: application/json" \
+          -d "$PAYLOAD"
+        ;;
+    esac
 done
 ```
 
@@ -321,6 +368,10 @@ See the [`examples/`](./examples/) directory:
 | `go-project.pipe.yml` | Parallel lint + test, build, deploy                 |
 | `rust-project.pipe.yml` | cargo fmt + clippy, test, release build, deploy   |
 | `deno-project.pipe.yml` | deno fmt + lint, test, compile, deploy             |
+| `multi-ci.pipe.yml`   | Fast CI pipeline for frequent pushes                |
+| `multi-release.pipe.yml` | Release artifacts, checksums, signing            |
+| `multi-nightly.pipe.yml` | Nightly maintenance/security checks              |
+| `monorepo.pipe.yml`   | Multi-service monorepo checks and packaging         |
 | `gpg-sign.pipe.yml`   | GPG-signing a release binary                        |
 | `attest.pipe.yml`     | SLSA provenance + cosign attestation                |
 | `artifacts.pipe.yml`  | Collecting, hashing, and publishing build artifacts |

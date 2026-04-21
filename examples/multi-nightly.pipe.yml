@@ -1,0 +1,33 @@
+# examples/multi-nightly.pipe.yml
+# Nightly maintenance pipeline (dependency + security scans).
+
+name: multi-nightly
+
+steps:
+  - name: deps-audit
+    run: |
+      if command -v govulncheck >/dev/null 2>&1; then
+        govulncheck ./...
+      else
+        echo "govulncheck not installed, skipping"
+      fi
+
+  - name: tidy-check
+    run: |
+      cp go.mod go.mod.bak
+      cp go.sum go.sum.bak
+      go mod tidy
+      if ! cmp -s go.mod go.mod.bak || ! cmp -s go.sum go.sum.bak; then
+        echo "go.mod/go.sum changed after tidy" >&2
+        exit 1
+      fi
+      rm -f go.mod.bak go.sum.bak
+
+  - name: refresh-sbom
+    run: |
+      if command -v syft >/dev/null 2>&1; then
+        mkdir -p dist
+        syft dir:. --output spdx-json --file dist/nightly.sbom.spdx.json
+      else
+        echo "syft not installed, skipping"
+      fi
