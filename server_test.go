@@ -61,6 +61,57 @@ func TestValidateRef(t *testing.T) {
 	}
 }
 
+func TestPipelineFileFromSelector(t *testing.T) {
+	tests := []struct {
+		name     string
+		selector string
+		want     string
+		wantErr  bool
+	}{
+		{name: "ci short", selector: "ci", want: ".pipe/ci.yml"},
+		{name: "release with extension", selector: "release.yml", want: ".pipe/release.yml"},
+		{name: "invalid slash", selector: "ops/ci", wantErr: true},
+		{name: "invalid ext", selector: "ci.json", wantErr: true},
+		{name: "invalid chars", selector: "ci!", wantErr: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := pipelineFileFromSelector(tc.selector)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error for %q", tc.selector)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error for %q: %v", tc.selector, err)
+			}
+			if got != tc.want {
+				t.Fatalf("unexpected pipeline file: got=%q want=%q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestResolveRequestedPipeline(t *testing.T) {
+	got, err := resolveRequestedPipeline(".pipe.yml", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != ".pipe.yml" {
+		t.Fatalf("unexpected default pipeline: %q", got)
+	}
+
+	got, err = resolveRequestedPipeline(".pipe.yml", "nightly")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != ".pipe/nightly.yml" {
+		t.Fatalf("unexpected resolved pipeline: %q", got)
+	}
+}
+
 func TestShouldNotifyGotify(t *testing.T) {
 	cfg := ServerConfig{GotifyEndpoint: "https://gotify.local/message"}
 
@@ -123,7 +174,7 @@ func TestNotifyGotify(t *testing.T) {
 	}, pushPayload{
 		Repo: "pipe",
 		Ref:  "refs/heads/main",
-	}, "main", "abc123", jobStatusOK, "pipeline passed", "pipe-123.log")
+	}, ".pipe/ci.yml", "main", "abc123", jobStatusOK, "pipeline passed", "pipe-123.log")
 	if err != nil {
 		t.Fatalf("notifyGotify returned error: %v", err)
 	}
@@ -152,7 +203,7 @@ func TestNotifyGotifyWithToken(t *testing.T) {
 		GotifyToken:    "secret-token",
 		GotifyPriority: 5,
 		GotifyOn:       "all",
-	}, pushPayload{Repo: "pipe", Ref: "refs/heads/main"}, "main", "abc123", jobStatusOK, "pipeline passed", "pipe-123.log")
+	}, pushPayload{Repo: "pipe", Ref: "refs/heads/main"}, ".pipe/release.yml", "main", "abc123", jobStatusOK, "pipeline passed", "pipe-123.log")
 	if err != nil {
 		t.Fatalf("notifyGotify returned error: %v", err)
 	}
@@ -171,7 +222,7 @@ func TestNotifyGotifyErrorStatus(t *testing.T) {
 		GotifyEndpoint: srv.URL,
 		GotifyPriority: 5,
 		GotifyOn:       "all",
-	}, pushPayload{Repo: "pipe", Ref: "refs/heads/main"}, "main", "abc123", jobStatusFail, "pipeline failed", "pipe-123.log")
+	}, pushPayload{Repo: "pipe", Ref: "refs/heads/main"}, ".pipe/ci.yml", "main", "abc123", jobStatusFail, "pipeline failed", "pipe-123.log")
 	if err == nil {
 		t.Fatal("expected error")
 	}

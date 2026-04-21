@@ -157,27 +157,38 @@ cp /path/to/pipe/examples/deno-project.pipe.yml .pipe.yml
 pipe run --branch main
 ```
 
-Before running, adjust `env:` values in the copied file (binary name, entrypoint,
-deploy host, etc.) to match your project.
+Before running, adjust `env:` values in the copied file (binary name,
+entrypoint, deploy host, etc.) to match your project.
 
 ### Many pipelines in one repository
 
 If one repository needs different pipeline goals (fast CI, release, nightly),
-use multiple pipeline files and pick one with `--file`:
+keep them inside `.pipe/` and select by name.
+
+Suggested layout:
+
+```text
+.pipe/
+  ci.yml
+  release.yml
+  nightly.yml
+```
+
+Local runs:
 
 ```bash
 # fast checks on every push
-pipe run --file .pipe.ci.yml --branch main
+pipe run --pipeline ci --branch main
 
 # release artifacts/signing
-pipe run --file .pipe.release.yml --branch main
+pipe run --pipeline release --branch main
 
 # nightly maintenance/security
-pipe run --file .pipe.nightly.yml --branch main
+pipe run --pipeline nightly --branch main
 ```
 
-For server mode, run multiple `pipe server` instances with different `--file`
-values and ports, then call the right endpoint(s) from `soft-serve` hooks.
+Server mode uses a single runner. Send `"pipeline":"ci"` (or release/nightly) in
+the webhook payload and `pipe` resolves `.pipe/<pipeline>.yml`.
 
 ---
 
@@ -212,9 +223,13 @@ pipe server --gotify-endpoint "https://gotify.local/message" --gotify-token "$GO
   "repo": "my-app",
   "ref": "refs/heads/main",
   "old": "abc1234",
-  "new": "def5678"
+  "new": "def5678",
+  "pipeline": "ci"
 }
 ```
+
+`pipeline` is optional. If omitted, server uses the default file configured with
+`--file` (default `.pipe.yml`).
 
 ### soft-serve post-receive hook
 
@@ -234,7 +249,7 @@ done
 
 ### soft-serve hook for many pipelines
 
-Example with three dedicated runners (`ci`, `release`, `nightly`):
+Single-runner example selecting `.pipe/*.yml` by branch:
 
 ```sh
 #!/bin/sh
@@ -242,21 +257,19 @@ set -eu
 
 while read -r OLD NEW REF; do
     REPO=$(basename "$PWD" .git)
-    PAYLOAD="{\"repo\":\"$REPO\",\"ref\":\"$REF\",\"old\":\"$OLD\",\"new\":\"$NEW\"}"
-
-    # Always trigger CI
-    curl -fsS -X POST "http://pipe-ci:9000/run" \
-        -H "Content-Type: application/json" \
-        -d "$PAYLOAD"
-
-    # Trigger release runner only for main/release branches
     case "$REF" in
+      refs/heads/nightly) PIPELINE="nightly" ;;
       refs/heads/main|refs/heads/release)
-        curl -fsS -X POST "http://pipe-release:9000/run" \
-          -H "Content-Type: application/json" \
-          -d "$PAYLOAD"
-        ;;
+        PIPELINE="release"
+      ;;
+      *)
+        PIPELINE="ci"
+      ;;
     esac
+
+    curl -fsS -X POST "http://pipe:9000/run" \
+      -H "Content-Type: application/json" \
+      -d "{\"repo\":\"$REPO\",\"ref\":\"$REF\",\"old\":\"$OLD\",\"new\":\"$NEW\",\"pipeline\":\"$PIPELINE\"}"
 done
 ```
 
@@ -310,51 +323,82 @@ visible in [Dozzle](https://dozzle.dev).
 
 If you miss GitHub Actions, you can do your own "actions" for `pipe`.
 
-### Derivating images
+### Action Repositories
 
-Using `pipe` as the base image, like:
+Use a dedicated repo with reusable scripts and call them from `.pipe/*.yml`:
 
-```bash
-pipe-base        (git, curl, ssh)
-  └── pipe-go    (+ go toolchain, golangci-lint)
-       └── pipe-release  (+ cosign, syft, gpg)
-  └── pipe-node  (+ node, npm)
-  └── pipe-deploy (+ kubectl, helm, ssh)
+```yaml
+- name: action-test-go
+  run: ./actions/go/test.sh
+
+- name: action-release
+  branches: [main]
+  run: ./actions/release/publish.sh
 ```
 
-### Remote Scripts
+### Derivating images
+
+Using `pipe` as the base image:
+
+```bash
+pipe-base          (git, curl, ssh)
+pipe-go            (+ go toolchain, golangci-lint)
+pipe-rust          (+ rustup, cargo, clippy)
+pipe-deno          (+ deno)
+pipe-release       (+ cosign, syft, gpg)
+pipe-deploy        (+ kubectl, helm, ssh)
+```
+
+Then choose image by pipeline type (`ci`, `release`, `nightly`) so each run has
+only the tools it needs.
+
+### Remote scripts (when you accept the risk)
 
 > [!WARNING]
 > I think I don't need to tell you why this is kind of a bad idea in the first
 > place. If you happen to not know, it's a terrible idea to run arbitrary
 > internet scripts with curl-into-sh.
 
-However, if you feel brave enough, you can setup a repository, for example
-`pipe-action-go` with reusable shell scripts:
+If you still want remote scripts, pin versions and verify checksums:
 
-```yml
-# En cualquier .pipe.yml
-- name: deploy
+```yaml
+- name: deploy-script
   run: |
-    curl -fsSL https://raw.githubusercontent.com/urutau-ltd/pipe-action-go/main/deploy.sh | sh
-    # with submodule: source ./scripts/deploy.sh
+    curl -fsSLo /tmp/deploy.sh https://example.com/actions/deploy-v1.2.3.sh
+    echo "b7f9...  /tmp/deploy.sh" | sha256sum -c -
+    sh /tmp/deploy.sh
 ```
 
 ### YAML Anchors
 
-```yml
+Use anchors for policy blocks and reusable command blocks.
+
+```yaml
 x-quality: &quality
   parallel: true
   branches: [main, develop]
 
-steps:
-  - name: lint
-    <<: *quality
-    run: golangci-lint run
+x-release-only: &release_only
+  branches: [main, release]
 
-  - name: test
+x-go-vet-run: &go_vet_run |
+  go vet ./...
+
+x-go-test-run: &go_test_run |
+  go test ./...
+
+steps:
+  - name: go-vet
     <<: *quality
-    run: go test ./...
+    run: *go_vet_run
+
+  - name: go-test
+    <<: *quality
+    run: *go_test_run
+
+  - name: release-upload
+    <<: *release_only
+    run: ./actions/release/upload.sh
 ```
 
 ---
@@ -363,18 +407,18 @@ steps:
 
 See the [`examples/`](./examples/) directory:
 
-| File                  | Demonstrates                                        |
-| --------------------- | --------------------------------------------------- |
-| `go-project.pipe.yml` | Parallel lint + test, build, deploy                 |
-| `rust-project.pipe.yml` | cargo fmt + clippy, test, release build, deploy   |
-| `deno-project.pipe.yml` | deno fmt + lint, test, compile, deploy             |
-| `multi-ci.pipe.yml`   | Fast CI pipeline for frequent pushes                |
-| `multi-release.pipe.yml` | Release artifacts, checksums, signing            |
-| `multi-nightly.pipe.yml` | Nightly maintenance/security checks              |
-| `monorepo.pipe.yml`   | Multi-service monorepo checks and packaging         |
-| `gpg-sign.pipe.yml`   | GPG-signing a release binary                        |
-| `attest.pipe.yml`     | SLSA provenance + cosign attestation                |
-| `artifacts.pipe.yml`  | Collecting, hashing, and publishing build artifacts |
+| File                     | Demonstrates                                        |
+| ------------------------ | --------------------------------------------------- |
+| `go-project.pipe.yml`    | Parallel lint + test, build, deploy                 |
+| `rust-project.pipe.yml`  | cargo fmt + clippy, test, release build, deploy     |
+| `deno-project.pipe.yml`  | deno fmt + lint, test, compile, deploy              |
+| `multi-ci.pipe.yml`      | Fast CI pipeline for frequent pushes                |
+| `multi-release.pipe.yml` | Release artifacts, checksums, signing               |
+| `multi-nightly.pipe.yml` | Nightly maintenance/security checks                 |
+| `monorepo.pipe.yml`      | Multi-service monorepo checks and packaging         |
+| `gpg-sign.pipe.yml`      | GPG-signing a release binary                        |
+| `attest.pipe.yml`        | SLSA provenance + cosign attestation                |
+| `artifacts.pipe.yml`     | Collecting, hashing, and publishing build artifacts |
 
 ### Pipe itself
 

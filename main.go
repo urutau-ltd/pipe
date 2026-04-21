@@ -20,6 +20,7 @@ Examples:
   pipe run                        # run all steps in current directory
   pipe run --step build           # run a single step
   pipe run --branch main          # simulate a branch-filtered run
+  pipe run --pipeline ci          # run .pipe/ci.yml
   pipe run --dir /path/to/repo    # run in a specific directory
 
   pipe server                     # listen on :9000, clone via http://soft-serve:23232
@@ -54,6 +55,7 @@ func main() {
 func runCommand(args []string) {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	file := fs.String("file", ".pipe.yml", "pipeline file name")
+	pipeline := fs.String("pipeline", "", "pipeline selector under .pipe/ (e.g. ci -> .pipe/ci.yml)")
 	step := fs.String("step", "", "run a single named step only")
 	dir := fs.String("dir", ".", "repository directory")
 	branch := fs.String("branch", "", "branch name for step filtering (e.g. main)")
@@ -65,7 +67,21 @@ func runCommand(args []string) {
 	}
 	_ = fs.Parse(args)
 
-	p, err := LoadPipeline(*dir, *file)
+	pipelineFile := *file
+	if strings.TrimSpace(*pipeline) != "" {
+		if *file != ".pipe.yml" {
+			fmt.Fprintln(os.Stderr, "error: use either --file or --pipeline, not both")
+			os.Exit(2)
+		}
+		resolved, err := pipelineFileFromSelector(*pipeline)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: invalid --pipeline: %v\n", err)
+			os.Exit(2)
+		}
+		pipelineFile = resolved
+	}
+
+	p, err := LoadPipeline(*dir, pipelineFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -89,10 +105,11 @@ func runCommand(args []string) {
 		OnlyStep: *step,
 		Output:   os.Stdout,
 		Env: map[string]string{
-			"PIPE_REPO":   filepath.Base(abs),
-			"PIPE_BRANCH": branchVal,
-			"PIPE_COMMIT": resolveCommit(*dir),
-			"PIPE_REF":    "refs/heads/" + branchVal,
+			"PIPE_REPO":     filepath.Base(abs),
+			"PIPE_BRANCH":   branchVal,
+			"PIPE_COMMIT":   resolveCommit(*dir),
+			"PIPE_REF":      "refs/heads/" + branchVal,
+			"PIPE_PIPELINE": pipelineFile,
 		},
 	})
 

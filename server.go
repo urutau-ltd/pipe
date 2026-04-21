@@ -43,15 +43,17 @@ type ServerConfig struct {
 }
 
 type pushPayload struct {
-	Repo string `json:"repo"`
-	Ref  string `json:"ref"`
-	Old  string `json:"old"`
-	New  string `json:"new"`
+	Repo     string `json:"repo"`
+	Ref      string `json:"ref"`
+	Old      string `json:"old"`
+	New      string `json:"new"`
+	Pipeline string `json:"pipeline,omitempty"`
 }
 
 type job struct {
-	payload pushPayload
-	logPath string
+	payload      pushPayload
+	logPath      string
+	pipelineFile string
 }
 
 type jobResultStatus string
@@ -130,15 +132,21 @@ func StartServer(cfg ServerConfig) {
 			log.Printf("pipe: rejected invalid ref %q", p.Ref)
 			return
 		}
+		pipelineFile, err := resolveRequestedPipeline(cfg.PipelineFile, p.Pipeline)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("invalid pipeline: %v", err), http.StatusBadRequest)
+			log.Printf("pipe: rejected invalid pipeline %q", p.Pipeline)
+			return
+		}
 
 		p.Repo = repoName
 		logName := fmt.Sprintf("%s-%d.log", repoName, time.Now().UnixMilli())
 		logPath := filepath.Join(cfg.WorkDir, "logs", logName)
 		select {
-		case jobs <- job{payload: p, logPath: logPath}:
+		case jobs <- job{payload: p, logPath: logPath, pipelineFile: pipelineFile}:
 			w.WriteHeader(http.StatusAccepted)
-			fmt.Fprintf(w, "queued  repo=%s ref=%s log=%s\n", p.Repo, p.Ref, logName)
-			log.Printf("pipe: queued  repo=%s ref=%s", p.Repo, p.Ref)
+			fmt.Fprintf(w, "queued  repo=%s ref=%s pipeline=%s log=%s\n", p.Repo, p.Ref, pipelineFile, logName)
+			log.Printf("pipe: queued  repo=%s ref=%s pipeline=%s", p.Repo, p.Ref, pipelineFile)
 		default:
 			http.Error(w, "queue full", http.StatusServiceUnavailable)
 		}
@@ -169,8 +177,12 @@ func processJob(j job, cfg ServerConfig) {
 	status := jobStatusFail
 	detail := "internal error"
 	commitSHA := p.New
+	pipelineFile := j.pipelineFile
+	if pipelineFile == "" {
+		pipelineFile = cfg.PipelineFile
+	}
 	defer func() {
-		if err := notifyGotify(cfg, p, branch, commitSHA, status, detail, logName); err != nil {
+		if err := notifyGotify(cfg, p, pipelineFile, branch, commitSHA, status, detail, logName); err != nil {
 			log.Printf("pipe: gotify notify failed: %v", err)
 		}
 	}()
@@ -190,7 +202,7 @@ func processJob(j job, cfg ServerConfig) {
 		fmt.Fprintf(out, "[pipe] "+format+"\n", a...)
 	}
 
-	logf("triggered  repo=%s ref=%s branch=%s", p.Repo, p.Ref, branch)
+	logf("triggered  repo=%s ref=%s branch=%s pipeline=%s", p.Repo, p.Ref, branch, pipelineFile)
 
 	if _, err := os.Stat(repoDir); os.IsNotExist(err) {
 		logf("cloning %s", cloneURL)
@@ -228,7 +240,7 @@ func processJob(j job, cfg ServerConfig) {
 
 	commitSHA = resolveCommit(repoDir)
 
-	pipeline, err := LoadPipeline(repoDir, cfg.PipelineFile)
+	pipeline, err := LoadPipeline(repoDir, pipelineFile)
 	if err != nil {
 		status = jobStatusIgnored
 		detail = fmt.Sprintf("no pipeline: %v", err)
@@ -241,10 +253,11 @@ func processJob(j job, cfg ServerConfig) {
 		Branch: branch,
 		Output: out,
 		Env: map[string]string{
-			"PIPE_REPO":   p.Repo,
-			"PIPE_BRANCH": branch,
-			"PIPE_COMMIT": commitSHA,
-			"PIPE_REF":    p.Ref,
+			"PIPE_REPO":     p.Repo,
+			"PIPE_BRANCH":   branch,
+			"PIPE_COMMIT":   commitSHA,
+			"PIPE_REF":      p.Ref,
+			"PIPE_PIPELINE": pipelineFile,
 		},
 	})
 
@@ -260,7 +273,7 @@ func processJob(j job, cfg ServerConfig) {
 	logf("OK  repo=%s branch=%s", p.Repo, branch)
 }
 
-func notifyGotify(cfg ServerConfig, p pushPayload, branch, commit string, status jobResultStatus, detail, logName string) error {
+func notifyGotify(cfg ServerConfig, p pushPayload, pipelineFile, branch, commit string, status jobResultStatus, detail, logName string) error {
 	if !shouldNotifyGotify(cfg, status) {
 		return nil
 	}
@@ -271,8 +284,8 @@ func notifyGotify(cfg ServerConfig, p pushPayload, branch, commit string, status
 	payload := map[string]any{
 		"title": fmt.Sprintf("pipe %s %s@%s", strings.ToUpper(string(status)), p.Repo, branch),
 		"message": fmt.Sprintf(
-			"repo=%s\nbranch=%s\nref=%s\ncommit=%s\nstatus=%s\ndetail=%s\nlog=%s",
-			p.Repo, branch, p.Ref, commit, status, detail, logName,
+			"repo=%s\nbranch=%s\npipeline=%s\nref=%s\ncommit=%s\nstatus=%s\ndetail=%s\nlog=%s",
+			p.Repo, branch, pipelineFile, p.Ref, commit, status, detail, logName,
 		),
 		"priority": cfg.GotifyPriority,
 	}
@@ -376,4 +389,47 @@ func validateRef(ref string) error {
 	}
 
 	return nil
+}
+
+func resolveRequestedPipeline(defaultFile, selector string) (string, error) {
+	if strings.TrimSpace(selector) == "" {
+		return defaultFile, nil
+	}
+	return pipelineFileFromSelector(selector)
+}
+
+func pipelineFileFromSelector(selector string) (string, error) {
+	name := strings.TrimSpace(selector)
+	if name == "" {
+		return "", fmt.Errorf("pipeline selector is empty")
+	}
+	if strings.ContainsAny(name, "/\\\x00") || strings.Contains(name, "..") {
+		return "", fmt.Errorf("pipeline selector must be a plain name")
+	}
+	if strings.HasPrefix(name, ".") || strings.HasSuffix(name, ".") {
+		return "", fmt.Errorf("invalid pipeline selector %q", selector)
+	}
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			continue
+		}
+		if r == '-' || r == '_' || r == '.' {
+			continue
+		}
+		return "", fmt.Errorf("invalid character %q in pipeline selector", r)
+	}
+
+	ext := filepath.Ext(name)
+	switch ext {
+	case "":
+		return filepath.Join(".pipe", name+".yml"), nil
+	case ".yml", ".yaml":
+		base := strings.TrimSuffix(name, ext)
+		if base == "" {
+			return "", fmt.Errorf("invalid pipeline selector %q", selector)
+		}
+		return filepath.Join(".pipe", name), nil
+	default:
+		return "", fmt.Errorf("pipeline selector must end with .yml or .yaml")
+	}
 }
