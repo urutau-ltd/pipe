@@ -79,6 +79,11 @@ func runCommand(args []string) {
 	engine := fs.String("engine", "auto", "container engine: auto, docker, podman")
 	socket := fs.String("socket", "", "optional absolute unix socket path for container engine")
 	image := fs.String("image", "", "default container image (step.image > --image > pipeline image)")
+	var secretEnv stringSliceFlag
+	fs.Var(&secretEnv, "secret-env", "host env var name to inject and redact from logs (repeatable)")
+	var secretMask stringSliceFlag
+	fs.Var(&secretMask, "mask", "literal value to redact from logs (repeatable)")
+	noMaskSecrets := fs.Bool("no-mask-secrets", false, "disable secret masking in logs")
 	isolate := fs.Bool("isolate", true, "run in a temporary isolated workspace")
 	keepWorkdir := fs.Bool("keep-workdir", false, "keep temporary workspace after run (requires --isolate)")
 	var artifacts stringSliceFlag
@@ -160,6 +165,9 @@ func runCommand(args []string) {
 		ContainerEngine: *engine,
 		ContainerSocket: *socket,
 		ContainerImage:  *image,
+		SecretEnv:       []string(secretEnv),
+		SecretMask:      []string(secretMask),
+		NoMaskSecrets:   *noMaskSecrets,
 		Env: map[string]string{
 			"PIPE_REPO":     filepath.Base(abs),
 			"PIPE_BRANCH":   branchVal,
@@ -193,6 +201,11 @@ func serverCommand(args []string) {
 	engine := fs.String("engine", "auto", "container engine: auto, docker, podman")
 	socket := fs.String("socket", "", "optional absolute unix socket path for container engine")
 	image := fs.String("image", "", "default container image for server pipeline steps")
+	var secretEnv stringSliceFlag
+	fs.Var(&secretEnv, "secret-env", "host env var name to inject and redact from logs (repeatable)")
+	var secretMask stringSliceFlag
+	fs.Var(&secretMask, "mask", "literal value to redact from logs (repeatable)")
+	noMaskSecrets := fs.Bool("no-mask-secrets", false, "disable secret masking in logs")
 	gotifyEndpoint := fs.String("gotify-endpoint", "", "optional Gotify endpoint (e.g. https://gotify.local/message)")
 	gotifyToken := fs.String("gotify-token", "", "optional Gotify app token (sent as X-Gotify-Key)")
 	gotifyPriority := fs.Int("gotify-priority", 5, "Gotify priority (when notifications are enabled)")
@@ -221,6 +234,9 @@ func serverCommand(args []string) {
 		ContainerEngine: *engine,
 		ContainerSocket: *socket,
 		ContainerImage:  *image,
+		SecretEnv:       []string(secretEnv),
+		SecretMask:      []string(secretMask),
+		NoMaskSecrets:   *noMaskSecrets,
 		GotifyEndpoint:  *gotifyEndpoint,
 		GotifyToken:     *gotifyToken,
 		GotifyPriority:  *gotifyPriority,

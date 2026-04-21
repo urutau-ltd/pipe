@@ -142,6 +142,34 @@ reflect the push event. In local mode they reflect the current git state.
 
 Pipeline-level `env:` keys are also available, overridable by the above.
 
+### Secrets and Log Redaction
+
+`pipe` supports secret injection and log masking:
+
+- `--secret-env NAME` injects host env var `NAME` into the run environment
+- values from `--secret-env` are redacted in stdout and log files
+- values of env vars that look sensitive (`*TOKEN*`, `*SECRET*`, `*PASSWORD*`,
+  etc.) are also redacted
+- `--mask VALUE` lets you redact additional literal values
+- `--no-mask-secrets` disables masking (not recommended)
+
+Pipeline-level secrets (loaded from host env):
+
+```yaml
+name: my-app
+image: docker.io/library/golang:1.26-bookworm
+secrets:
+  - GITHUB_TOKEN
+  - CR_PAT
+```
+
+CLI examples:
+
+```bash
+pipe run --secret-env GITHUB_TOKEN --secret-env CR_PAT
+pipe run --mask "https://token@github.com"
+```
+
 ---
 
 ## Local usage
@@ -267,6 +295,7 @@ pipe server --clone ssh://git.example.com:23231
 pipe server --workdir /var/lib/pipe
 pipe server --executor auto --engine auto
 pipe server --image docker.io/library/golang:1.26-bookworm
+pipe server --secret-env GITHUB_TOKEN --secret-env CR_PAT
 pipe server --actions-url "https://raw.githubusercontent.com/acme/pipe-actions/main"
 pipe server --gotify-endpoint "https://gotify.local/message" --gotify-token "$GOTIFY_TOKEN"
 pipe server --gotify-endpoint "https://gotify.local/message" --gotify-token "$GOTIFY_TOKEN" --gotify-on fail
@@ -364,6 +393,9 @@ pipe:
   image: "ghcr.io/urutau-ltd/pipe:latest"
   container_name: pipe
   restart: always
+  environment:
+    - GITHUB_TOKEN=${GITHUB_TOKEN}
+    - CR_PAT=${CR_PAT}
   ports:
     - "127.0.0.1:9000:9000"
   volumes:
@@ -381,6 +413,10 @@ pipe:
     - "auto"
     - "--image"
     - "docker.io/library/golang:1.26-bookworm"
+    - "--secret-env"
+    - "GITHUB_TOKEN"
+    - "--secret-env"
+    - "CR_PAT"
     - "--actions-url"
     - "${PIPE_ACTIONS_URL:-}"
     - "--gotify-endpoint"

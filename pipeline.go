@@ -12,10 +12,11 @@ import (
 
 // Pipeline is the parsed representation of a .pipe.yml file.
 type Pipeline struct {
-	Name  string            `yaml:"name"`
-	Image string            `yaml:"image"`
-	Env   map[string]string `yaml:"env"`
-	Steps []Step            `yaml:"steps"`
+	Name    string            `yaml:"name"`
+	Image   string            `yaml:"image"`
+	Env     map[string]string `yaml:"env"`
+	Secrets []string          `yaml:"secrets"`
+	Steps   []Step            `yaml:"steps"`
 }
 
 // Step is a single CI step.

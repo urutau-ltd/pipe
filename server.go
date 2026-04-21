@@ -42,6 +42,9 @@ type ServerConfig struct {
 	ContainerEngine string
 	ContainerSocket string
 	ContainerImage  string
+	SecretEnv       []string
+	SecretMask      []string
+	NoMaskSecrets   bool
 	GotifyEndpoint  string
 	GotifyToken     string
 	GotifyPriority  int
@@ -301,6 +304,9 @@ func processJob(j job, cfg ServerConfig) {
 		ContainerEngine: cfg.ContainerEngine,
 		ContainerSocket: cfg.ContainerSocket,
 		ContainerImage:  cfg.ContainerImage,
+		SecretEnv:       cfg.SecretEnv,
+		SecretMask:      cfg.SecretMask,
+		NoMaskSecrets:   cfg.NoMaskSecrets,
 		Env:             envMap,
 	})
 

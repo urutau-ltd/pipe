@@ -28,6 +28,9 @@ type RunOptions struct {
 	OnlyStep        string            // if set, only run this step by name
 	Env             map[string]string // extra env vars merged over pipeline-level env
 	Output          io.Writer         // destination for all output (default: os.Stdout)
+	SecretEnv       []string          // host env names injected into the run env (and masked)
+	SecretMask      []string          // extra literal values to redact from logs
+	NoMaskSecrets   bool              // disable log secret masking
 	Executor        string            // auto, container, host
 	ContainerEngine string            // auto, docker, podman
 	ContainerSocket string            // optional unix socket path
@@ -75,17 +78,29 @@ func RunPipeline(p *Pipeline, opts RunOptions) []StepResult {
 	for k, v := range opts.Env {
 		env[k] = v
 	}
+	secretEnvNames := append([]string{}, p.Secrets...)
+	secretEnvNames = append(secretEnvNames, opts.SecretEnv...)
+	if err := injectSecretEnv(env, secretEnvNames); err != nil {
+		result := StepResult{Name: "__setup__", Err: err}
+		printStepFail(opts.Output, "__setup__", 0, err)
+		printSummary(opts.Output, []StepResult{result})
+		return []StepResult{result}
+	}
+	output := opts.Output
+	if !opts.NoMaskSecrets {
+		output = wrapWithSecretRedactor(output, env, secretEnvNames, opts.SecretMask)
+	}
 
 	canParallel := runtime.NumCPU() > 1
 	groups := groupSteps(p.Steps, opts.OnlyStep)
 	var allResults []StepResult
 
-	printHeader(opts.Output, p.Name, canParallel)
-	stepRunner, err := prepareStepRunner(p, opts, env, opts.Output)
+	printHeader(output, p.Name, canParallel)
+	stepRunner, err := prepareStepRunner(p, opts, env, output)
 	if err != nil {
 		result := StepResult{Name: "__setup__", Err: err}
-		printStepFail(opts.Output, "__setup__", 0, err)
-		printSummary(opts.Output, []StepResult{result})
+		printStepFail(output, "__setup__", 0, err)
+		printSummary(output, []StepResult{result})
 		return []StepResult{result}
 	}
 
@@ -102,9 +117,9 @@ func RunPipeline(p *Pipeline, opts RunOptions) []StepResult {
 		}
 
 		if g.parallel && canParallel && len(g.steps) > 1 {
-			groupResults = runParallelGroup(candidates, opts.Branch, opts.Output, stepRunner)
+			groupResults = runParallelGroup(candidates, opts.Branch, output, stepRunner)
 		} else {
-			groupResults = runSequentialGroup(candidates, opts.Branch, opts.Output, stepRunner)
+			groupResults = runSequentialGroup(candidates, opts.Branch, output, stepRunner)
 		}
 
 		allResults = append(allResults, groupResults...)
@@ -115,7 +130,7 @@ func RunPipeline(p *Pipeline, opts RunOptions) []StepResult {
 		}
 	}
 
-	printSummary(opts.Output, allResults)
+	printSummary(output, allResults)
 	return allResults
 }
 
