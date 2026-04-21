@@ -526,7 +526,7 @@ Security baseline:
 - keep the action repo private/internal when appropriate
 - treat actions like code dependencies (review and version them)
 
-### Copy-paste fallback (no network actions)
+### I just want to tidy-up my YAML, not remote scripts!
 
 For teams that prefer zero remote scripts, keep reusable shell blocks inside
 YAML anchors and copy between repos.
