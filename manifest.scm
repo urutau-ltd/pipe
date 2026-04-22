@@ -2,4 +2,11 @@
 ;; introdujo. Puede almacenarlo dentro de un archivo que pudiese pasar a
 ;; cualquier comando 'guix' que acepte una opción '--manifest' (o -m).
 
-(specifications->manifest (list "go" "gopls" "make" "podman" "podman-compose"))
+(specifications->manifest
+ (list "go"
+       "gopls"
+       "govulncheck"
+       "podman"
+       "podman-compose"
+       "make"
+       "gcc-toolchain"))
