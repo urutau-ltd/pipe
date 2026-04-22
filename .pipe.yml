@@ -24,6 +24,7 @@ steps:
     run: |
       mkdir -p dist
       CGO_ENABLED=0 go build \
+        -buildvcs=false \
         -ldflags="-s -w -X main.version=${PIPE_COMMIT:-dev}" \
         -o dist/pipe .
       echo "==> $(./dist/pipe version)"
