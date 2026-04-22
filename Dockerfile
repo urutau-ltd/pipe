@@ -16,11 +16,11 @@ FROM docker.io/library/docker:cli AS dockercli
 # ─────────────────────────────────────────────────────────
 FROM docker.io/library/almalinux:9-minimal
 
-# git is required for clone/pull in server mode
+# git is required for clone/pull in server mode.
+# almalinux:9-minimal already includes curl-minimal; installing curl conflicts.
 RUN microdnf install -y \
     bash \
     git \
-    curl \
     openssh-clients \
     ca-certificates \
     shadow-utils \
