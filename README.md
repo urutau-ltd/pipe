@@ -434,19 +434,20 @@ pipe:
   container_name: pipe
   restart: always
   environment:
+    - PIPE_WORKDIR=/opt/containers/pipe/workdir
     - GITHUB_TOKEN=${GITHUB_TOKEN}
     - CR_PAT=${CR_PAT}
   ports:
     - "127.0.0.1:9000:9000"
   volumes:
-    - "/opt/containers/pipe/workdir:/tmp/pipe:Z"
+    - "/opt/containers/pipe/workdir:/opt/containers/pipe/workdir:Z"
     - "/var/run/docker.sock:/var/run/docker.sock"
   command:
     - "server"
     - "--clone"
     - "http://soft-serve:23232"
     - "--workdir"
-    - "/tmp/pipe"
+    - "/opt/containers/pipe/workdir"
     - "--executor"
     - "container"
     - "--engine"
@@ -470,6 +471,12 @@ pipe:
     - "--gotify-on"
     - "all"
 ```
+
+When `pipe` runs inside a container and talks to host Docker via
+`/var/run/docker.sock`, the pipeline workspace path must be identical in both
+namespaces. In other words: if `--workdir` is `/opt/containers/pipe/workdir`,
+mount `host:/opt/containers/pipe/workdir` to
+`container:/opt/containers/pipe/workdir` (same absolute path on both sides).
 
 For rootless Podman, use your user socket instead (for example
 `/run/user/1000/podman/podman.sock`) and use

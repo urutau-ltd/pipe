@@ -310,9 +310,10 @@ func runStepInContainer(rt containerRuntime, image, dir string, env map[string]s
 	args := []string{
 		"run",
 		"--rm",
-		"--workdir", "/workspace",
-		"--volume", absDir + ":/workspace",
+		"--workdir", containerWorkspaceDir,
+		"--volume", absDir + ":" + containerWorkspaceDir,
 	}
+	args = appendGitSafeDirectoryEnv(args, env)
 	for _, kv := range envPairs(env) {
 		args = append(args, "--env", kv)
 	}
@@ -326,6 +327,23 @@ func runStepInContainer(rt containerRuntime, image, dir string, env map[string]s
 		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", rt.HostEnvKey, rt.HostEnvValue))
 	}
 	return cmd.Run()
+}
+
+func appendGitSafeDirectoryEnv(args []string, env map[string]string) []string {
+	if _, ok := env["GIT_CONFIG_COUNT"]; ok {
+		return args
+	}
+	if _, ok := env["GIT_CONFIG_KEY_0"]; ok {
+		return args
+	}
+	if _, ok := env["GIT_CONFIG_VALUE_0"]; ok {
+		return args
+	}
+	return append(args,
+		"--env", "GIT_CONFIG_COUNT=1",
+		"--env", "GIT_CONFIG_KEY_0=safe.directory",
+		"--env", "GIT_CONFIG_VALUE_0="+containerWorkspaceDir,
+	)
 }
 
 func envPairs(env map[string]string) []string {
@@ -366,6 +384,8 @@ if [ -d /usr/local/cargo/bin ]; then
   export PATH="/usr/local/cargo/bin:$PATH"
 fi
 `
+
+const containerWorkspaceDir = "/workspace"
 
 const pipeActionShellFunc = `pipe_action() {
   if [ "$#" -lt 1 ]; then

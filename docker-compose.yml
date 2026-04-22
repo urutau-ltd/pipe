@@ -3,17 +3,20 @@ services:
     image: "pipe:latest"
     container_name: pipe
     restart: always
+    environment:
+      - PIPE_WORKDIR=${PIPE_WORKDIR:-/tmp/pipe}
     ports:
       - "127.0.0.1:9000:9000"
     volumes:
-      - "./pipe/workdir:/tmp/pipe:Z"
+      # Must be the same absolute path on host and in this container when using docker.sock.
+      - "${PIPE_WORKDIR:-/tmp/pipe}:${PIPE_WORKDIR:-/tmp/pipe}:Z"
       - "/var/run/docker.sock:/var/run/docker.sock"
     command:
       - "server"
       - "--clone"
       - "http://soft-serve:23232"
       - "--workdir"
-      - "/tmp/pipe"
+      - "${PIPE_WORKDIR:-/tmp/pipe}"
       - "--executor"
       - "container"
       - "--engine"

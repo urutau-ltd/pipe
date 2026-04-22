@@ -75,3 +75,28 @@ func TestResolveStepImage(t *testing.T) {
 		t.Fatalf("expected step image, got %q", got)
 	}
 }
+
+func TestAppendGitSafeDirectoryEnv(t *testing.T) {
+	t.Run("adds safe directory env when not configured", func(t *testing.T) {
+		args := appendGitSafeDirectoryEnv([]string{"run"}, map[string]string{})
+		want := []string{
+			"run",
+			"--env", "GIT_CONFIG_COUNT=1",
+			"--env", "GIT_CONFIG_KEY_0=safe.directory",
+			"--env", "GIT_CONFIG_VALUE_0=" + containerWorkspaceDir,
+		}
+		if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
+			t.Fatalf("unexpected args:\n got: %#v\nwant: %#v", args, want)
+		}
+	})
+
+	t.Run("respects user git config env override", func(t *testing.T) {
+		base := []string{"run"}
+		args := appendGitSafeDirectoryEnv(base, map[string]string{
+			"GIT_CONFIG_COUNT": "2",
+		})
+		if strings.Join(args, "\x00") != strings.Join(base, "\x00") {
+			t.Fatalf("did not expect automatic git config env when user provides override: %#v", args)
+		}
+	})
+}
