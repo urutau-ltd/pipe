@@ -78,11 +78,14 @@ func runCommand(args []string) {
 	executor := fs.String("executor", "auto", "execution mode: auto, container, host")
 	engine := fs.String("engine", "auto", "container engine: auto, docker, podman")
 	socket := fs.String("socket", "", "optional absolute unix socket path for container engine")
-	image := fs.String("image", "", "default container image (step.image > --image > pipeline image)")
+	image := fs.String("image", "", "default container image fallback (step.image > pipeline image > --image)")
+	pullPolicy := fs.String("pull-policy", "missing", "container image pull policy: missing, always, never")
 	var secretEnv stringSliceFlag
-	fs.Var(&secretEnv, "secret-env", "host env var name to inject and redact from logs (repeatable)")
+	fs.Var(&secretEnv, "secret-env", "host env var name to inject and redact from logs (repeatable, suffix ? for optional)")
 	var secretMask stringSliceFlag
 	fs.Var(&secretMask, "mask", "literal value to redact from logs (repeatable)")
+	logFormat := fs.String("log-format", "auto", "log format: auto, pretty, plain")
+	noColor := fs.Bool("no-color", false, "disable ANSI colors in logs")
 	noMaskSecrets := fs.Bool("no-mask-secrets", false, "disable secret masking in logs")
 	isolate := fs.Bool("isolate", true, "run in a temporary isolated workspace")
 	keepWorkdir := fs.Bool("keep-workdir", false, "keep temporary workspace after run (requires --isolate)")
@@ -165,8 +168,11 @@ func runCommand(args []string) {
 		ContainerEngine: *engine,
 		ContainerSocket: *socket,
 		ContainerImage:  *image,
+		PullPolicy:      *pullPolicy,
+		LogFormat:       *logFormat,
 		SecretEnv:       []string(secretEnv),
 		SecretMask:      []string(secretMask),
+		NoColor:         *noColor,
 		NoMaskSecrets:   *noMaskSecrets,
 		Env: map[string]string{
 			"PIPE_REPO":     filepath.Base(abs),
@@ -196,15 +202,24 @@ func serverCommand(args []string) {
 	clone := fs.String("clone", "http://soft-serve:23232", "git base URL for cloning repos")
 	workdir := fs.String("workdir", "/tmp/pipe", "working directory for clones and logs")
 	file := fs.String("file", ".pipe.yml", "pipeline file name to look for in each repo")
+	workers := fs.Int("workers", 1, "number of concurrent pipeline workers")
+	queueSize := fs.Int("queue-size", 32, "max queued pipeline jobs before /run returns queue full")
+	logRetentionDays := fs.Int("log-retention-days", 14, "delete logs older than N days (0 disables age pruning)")
+	logRetentionCount := fs.Int("log-retention-count", 2000, "max number of log files to keep (0 disables count pruning)")
 	actionsURL := fs.String("actions-url", "", "optional base URL for shared actions (e.g. raw.githubusercontent.com/.../actions)")
 	executor := fs.String("executor", "auto", "execution mode: auto, container, host")
 	engine := fs.String("engine", "auto", "container engine: auto, docker, podman")
 	socket := fs.String("socket", "", "optional absolute unix socket path for container engine")
-	image := fs.String("image", "", "default container image for server pipeline steps")
+	image := fs.String("image", "", "default container image fallback for steps without pipeline/step image")
+	pullPolicy := fs.String("pull-policy", "missing", "container image pull policy: missing, always, never")
+	var labels stringSliceFlag
+	fs.Var(&labels, "label", "server label key=value (repeatable)")
 	var secretEnv stringSliceFlag
-	fs.Var(&secretEnv, "secret-env", "host env var name to inject and redact from logs (repeatable)")
+	fs.Var(&secretEnv, "secret-env", "host env var name to inject and redact from logs (repeatable, suffix ? for optional)")
 	var secretMask stringSliceFlag
 	fs.Var(&secretMask, "mask", "literal value to redact from logs (repeatable)")
+	logFormat := fs.String("log-format", "auto", "log format: auto, pretty, plain")
+	noColor := fs.Bool("no-color", false, "disable ANSI colors in logs")
 	noMaskSecrets := fs.Bool("no-mask-secrets", false, "disable secret masking in logs")
 	gotifyEndpoint := fs.String("gotify-endpoint", "", "optional Gotify endpoint (e.g. https://gotify.local/message)")
 	gotifyToken := fs.String("gotify-token", "", "optional Gotify app token (sent as X-Gotify-Key)")
@@ -223,23 +238,36 @@ func serverCommand(args []string) {
 		fmt.Fprintf(os.Stderr, "error: invalid --gotify-on value %q (allowed: fail, all)\n", *gotifyOn)
 		os.Exit(2)
 	}
+	labelMap, err := parseLabelMap([]string(labels))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: invalid --label: %v\n", err)
+		os.Exit(2)
+	}
 
 	StartServer(ServerConfig{
-		Port:            *port,
-		CloneBaseURL:    *clone,
-		WorkDir:         *workdir,
-		PipelineFile:    *file,
-		ActionsURL:      *actionsURL,
-		Executor:        *executor,
-		ContainerEngine: *engine,
-		ContainerSocket: *socket,
-		ContainerImage:  *image,
-		SecretEnv:       []string(secretEnv),
-		SecretMask:      []string(secretMask),
-		NoMaskSecrets:   *noMaskSecrets,
-		GotifyEndpoint:  *gotifyEndpoint,
-		GotifyToken:     *gotifyToken,
-		GotifyPriority:  *gotifyPriority,
-		GotifyOn:        on,
+		Port:              *port,
+		CloneBaseURL:      *clone,
+		WorkDir:           *workdir,
+		PipelineFile:      *file,
+		Workers:           *workers,
+		QueueSize:         *queueSize,
+		LogRetentionDays:  *logRetentionDays,
+		LogRetentionCount: *logRetentionCount,
+		ActionsURL:        *actionsURL,
+		Executor:          *executor,
+		ContainerEngine:   *engine,
+		ContainerSocket:   *socket,
+		ContainerImage:    *image,
+		PullPolicy:        *pullPolicy,
+		Labels:            labelMap,
+		LogFormat:         *logFormat,
+		NoColor:           *noColor,
+		SecretEnv:         []string(secretEnv),
+		SecretMask:        []string(secretMask),
+		NoMaskSecrets:     *noMaskSecrets,
+		GotifyEndpoint:    *gotifyEndpoint,
+		GotifyToken:       *gotifyToken,
+		GotifyPriority:    *gotifyPriority,
+		GotifyOn:          on,
 	})
 }

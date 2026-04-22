@@ -26,15 +26,15 @@ func (w *redactWriter) Write(p []byte) (int, error) {
 
 func injectSecretEnv(env map[string]string, names []string) error {
 	for _, raw := range names {
-		name := strings.TrimSpace(raw)
-		if name == "" {
-			return fmt.Errorf("secret env name is empty")
-		}
-		if !isValidEnvName(name) {
-			return fmt.Errorf("invalid secret env name %q", raw)
+		name, optional, err := parseSecretEnvRef(raw)
+		if err != nil {
+			return err
 		}
 		val, ok := os.LookupEnv(name)
 		if !ok {
+			if optional {
+				continue
+			}
 			return fmt.Errorf("missing secret env %q", name)
 		}
 		env[name] = val
@@ -74,7 +74,11 @@ func collectRedactionValues(env map[string]string, secretNames, extraMasks []str
 	}
 
 	for _, name := range secretNames {
-		if val, ok := env[strings.TrimSpace(name)]; ok {
+		resolved, _, err := parseSecretEnvRef(name)
+		if err != nil {
+			resolved = strings.TrimSpace(name)
+		}
+		if val, ok := env[resolved]; ok {
 			add(val)
 		}
 	}
@@ -154,4 +158,23 @@ func isValidEnvName(name string) bool {
 		}
 	}
 	return true
+}
+
+func parseSecretEnvRef(raw string) (name string, optional bool, err error) {
+	ref := strings.TrimSpace(raw)
+	if ref == "" {
+		return "", false, fmt.Errorf("secret env name is empty")
+	}
+
+	if strings.HasSuffix(ref, "?") {
+		optional = true
+		ref = strings.TrimSpace(strings.TrimSuffix(ref, "?"))
+	}
+	if ref == "" {
+		return "", false, fmt.Errorf("secret env name is empty")
+	}
+	if !isValidEnvName(ref) {
+		return "", false, fmt.Errorf("invalid secret env name %q", raw)
+	}
+	return ref, optional, nil
 }

@@ -8,7 +8,25 @@ on:
 permissions: read-all
 
 jobs:
+  validate-tag:
+    name: Validate release tag
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enforce semver and major line
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          if ! printf '%s\n' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "Invalid release tag '$TAG'. Expected semver format vMAJOR.MINOR.PATCH." >&2
+            exit 1
+          fi
+          if printf '%s\n' "$TAG" | grep -Eq '^v1\.'; then
+            echo "Tag '$TAG' is blocked: this project now releases on the v2.x line." >&2
+            exit 1
+          fi
+
   build:
+    needs: validate-tag
     permissions:
       id-token: write
       contents: write

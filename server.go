@@ -12,6 +12,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,7 +23,11 @@ import (
 const (
 	runBodyLimitBytes       = 64 << 10
 	defaultJobQueueSize     = 32
+	defaultServerWorkers    = 1
 	maxPipelinesPerRequest  = 16
+	defaultRunsListLimit    = 20
+	maxRunsListLimit        = 200
+	logPruneInterval        = 1 * time.Hour
 	serverReadTimeout       = 10 * time.Second
 	serverReadHeaderTimeout = 5 * time.Second
 	serverWriteTimeout      = 30 * time.Second
@@ -33,22 +39,30 @@ const (
 
 // ServerConfig holds runtime configuration for the webhook server.
 type ServerConfig struct {
-	Port            int
-	CloneBaseURL    string
-	WorkDir         string
-	PipelineFile    string
-	ActionsURL      string
-	Executor        string
-	ContainerEngine string
-	ContainerSocket string
-	ContainerImage  string
-	SecretEnv       []string
-	SecretMask      []string
-	NoMaskSecrets   bool
-	GotifyEndpoint  string
-	GotifyToken     string
-	GotifyPriority  int
-	GotifyOn        string
+	Port              int
+	CloneBaseURL      string
+	WorkDir           string
+	PipelineFile      string
+	Workers           int
+	QueueSize         int
+	LogRetentionDays  int
+	LogRetentionCount int
+	ActionsURL        string
+	Executor          string
+	ContainerEngine   string
+	ContainerSocket   string
+	ContainerImage    string
+	PullPolicy        string
+	Labels            map[string]string
+	NoColor           bool
+	LogFormat         string
+	SecretEnv         []string
+	SecretMask        []string
+	NoMaskSecrets     bool
+	GotifyEndpoint    string
+	GotifyToken       string
+	GotifyPriority    int
+	GotifyOn          string
 }
 
 type pushPayload struct {
@@ -64,11 +78,14 @@ type job struct {
 	payload      pushPayload
 	logPath      string
 	pipelineFile string
+	runID        string
 }
 
 type jobResultStatus string
 
 const (
+	jobStatusQueued  jobResultStatus = "queued"
+	jobStatusRunning jobResultStatus = "running"
 	jobStatusOK      jobResultStatus = "ok"
 	jobStatusFail    jobResultStatus = "fail"
 	jobStatusIgnored jobResultStatus = "ignored"
@@ -87,17 +104,63 @@ func StartServer(cfg ServerConfig) {
 	if strings.TrimSpace(cfg.ContainerEngine) == "" {
 		cfg.ContainerEngine = "auto"
 	}
+	if strings.TrimSpace(cfg.PullPolicy) == "" {
+		cfg.PullPolicy = "missing"
+	}
+	if strings.TrimSpace(cfg.LogFormat) == "" {
+		cfg.LogFormat = "auto"
+	}
+	if cfg.Workers <= 0 {
+		cfg.Workers = defaultServerWorkers
+	}
+	if cfg.QueueSize <= 0 {
+		cfg.QueueSize = defaultJobQueueSize
+	}
+	if cfg.LogRetentionDays < 0 {
+		cfg.LogRetentionDays = 0
+	}
+	if cfg.LogRetentionCount < 0 {
+		cfg.LogRetentionCount = 0
+	}
+	if cfg.Labels == nil {
+		cfg.Labels = map[string]string{}
+	}
+	if err := validateServerRuntime(cfg); err != nil {
+		log.Fatalf("pipe: runtime preflight failed: %v", err)
+	}
 
 	if err := os.MkdirAll(filepath.Join(cfg.WorkDir, "logs"), 0o755); err != nil {
 		log.Fatalf("pipe: creating workdir: %v", err)
 	}
-
-	jobs := make(chan job, defaultJobQueueSize)
+	if removed, err := pruneServerLogs(filepath.Join(cfg.WorkDir, "logs"), cfg.LogRetentionDays, cfg.LogRetentionCount); err != nil {
+		log.Printf("pipe: log prune failed: %v", err)
+	} else if removed > 0 {
+		log.Printf("pipe: log prune removed=%d", removed)
+	}
 	go func() {
-		for j := range jobs {
-			processJob(j, cfg)
+		ticker := time.NewTicker(logPruneInterval)
+		defer ticker.Stop()
+		for range ticker.C {
+			removed, err := pruneServerLogs(filepath.Join(cfg.WorkDir, "logs"), cfg.LogRetentionDays, cfg.LogRetentionCount)
+			if err != nil {
+				log.Printf("pipe: periodic log prune failed: %v", err)
+				continue
+			}
+			if removed > 0 {
+				log.Printf("pipe: periodic log prune removed=%d", removed)
+			}
 		}
 	}()
+
+	jobs := make(chan job, cfg.QueueSize)
+	tracker := newRunTracker(defaultRunHistoryLimit)
+	for i := 0; i < cfg.Workers; i++ {
+		go func() {
+			for j := range jobs {
+				processJob(j, cfg, tracker)
+			}
+		}()
+	}
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
 	app, err := aile.New(
@@ -158,31 +221,87 @@ func StartServer(cfg ServerConfig) {
 		p.Repo = repoName
 		var queued, requested int
 		var logNames []string
+		var runIDs []string
 		requested = len(pipelineFiles)
 
 		for idx, pipelineFile := range pipelineFiles {
 			logName := buildPipelineLogName(repoName, pipelineFile, idx)
 			logPath := filepath.Join(cfg.WorkDir, "logs", logName)
+			runID := tracker.enqueue(p, pipelineFile, logName)
 			select {
-			case jobs <- job{payload: p, logPath: logPath, pipelineFile: pipelineFile}:
+			case jobs <- job{
+				payload:      p,
+				logPath:      logPath,
+				pipelineFile: pipelineFile,
+				runID:        runID,
+			}:
 				queued++
 				logNames = append(logNames, logName)
+				runIDs = append(runIDs, runID)
 				log.Printf("pipe: queued  repo=%s ref=%s pipeline=%s", p.Repo, p.Ref, pipelineFile)
 			default:
+				tracker.drop(runID)
 				if queued == 0 {
 					http.Error(w, "queue full", http.StatusServiceUnavailable)
 					return
 				}
 				w.WriteHeader(http.StatusAccepted)
-				fmt.Fprintf(w, "partially queued  repo=%s ref=%s queued=%d requested=%d logs=%s\n",
-					p.Repo, p.Ref, queued, requested, strings.Join(logNames, ","))
+				fmt.Fprintf(w, "partially queued  repo=%s ref=%s queued=%d requested=%d logs=%s runs=%s\n",
+					p.Repo, p.Ref, queued, requested, strings.Join(logNames, ","), strings.Join(runIDs, ","))
 				return
 			}
 		}
 
 		w.WriteHeader(http.StatusAccepted)
-		fmt.Fprintf(w, "queued  repo=%s ref=%s pipelines=%d logs=%s\n",
-			p.Repo, p.Ref, queued, strings.Join(logNames, ","))
+		fmt.Fprintf(w, "queued  repo=%s ref=%s pipelines=%d logs=%s runs=%s\n",
+			p.Repo, p.Ref, queued, strings.Join(logNames, ","), strings.Join(runIDs, ","))
+	})
+
+	app.GET("/runs", func(w http.ResponseWriter, r *http.Request) {
+		runID := strings.TrimSpace(r.URL.Query().Get("id"))
+		if runID != "" {
+			rec, ok := tracker.get(runID)
+			if !ok {
+				http.Error(w, "run not found", http.StatusNotFound)
+				return
+			}
+			writeJSON(w, http.StatusOK, rec)
+			return
+		}
+
+		limit := parseRunsListLimit(r.URL.Query().Get("limit"))
+		writeJSON(w, http.StatusOK, tracker.snapshot(limit))
+	})
+
+	app.GET("/runs/log", func(w http.ResponseWriter, r *http.Request) {
+		runID := strings.TrimSpace(r.URL.Query().Get("id"))
+		if runID == "" {
+			http.Error(w, "missing id", http.StatusBadRequest)
+			return
+		}
+		rec, ok := tracker.get(runID)
+		if !ok {
+			http.Error(w, "run not found", http.StatusNotFound)
+			return
+		}
+		logPath, err := resolveRunLogPath(filepath.Join(cfg.WorkDir, "logs"), rec.Log)
+		if err != nil {
+			http.Error(w, "invalid log path", http.StatusBadRequest)
+			return
+		}
+		f, err := os.Open(logPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				http.Error(w, "log not found", http.StatusNotFound)
+				return
+			}
+			http.Error(w, "cannot open log", http.StatusInternalServerError)
+			return
+		}
+		defer f.Close()
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.Copy(w, f)
 	})
 
 	app.GET("/health", func(w http.ResponseWriter, _ *http.Request) {
@@ -192,21 +311,14 @@ func StartServer(cfg ServerConfig) {
 	if cfg.GotifyEndpoint == "" {
 		mode = "off"
 	}
-	log.Printf("pipe: listening on %s  clone=%s  workdir=%s  cpus=%d  executor=%s  engine=%s  gotify=%s",
-		addr, cfg.CloneBaseURL, cfg.WorkDir, runtime.NumCPU(), cfg.Executor, cfg.ContainerEngine, mode)
+	log.Printf("pipe: listening on %s  clone=%s  workdir=%s  cpus=%d  workers=%d  queue=%d  executor=%s  engine=%s  pull=%s  log-format=%s  log-retention-days=%d  log-retention-count=%d  labels=%v  gotify=%s",
+		addr, cfg.CloneBaseURL, cfg.WorkDir, runtime.NumCPU(), cfg.Workers, cfg.QueueSize, cfg.Executor, cfg.ContainerEngine, cfg.PullPolicy, cfg.LogFormat, cfg.LogRetentionDays, cfg.LogRetentionCount, cfg.Labels, mode)
 	log.Fatal(app.Run(context.Background()))
 }
 
-func processJob(j job, cfg ServerConfig) {
+func processJob(j job, cfg ServerConfig, tracker *runTracker) {
 	p := j.payload
 	branch := stripBranch(p.Ref)
-	repoName, err := sanitizeRepo(p.Repo)
-	if err != nil {
-		log.Printf("pipe: invalid repo: %v", err)
-		return
-	}
-	logName := filepath.Base(j.logPath)
-
 	status := jobStatusFail
 	detail := "internal error"
 	commitSHA := p.New
@@ -214,16 +326,35 @@ func processJob(j job, cfg ServerConfig) {
 	if pipelineFile == "" {
 		pipelineFile = cfg.PipelineFile
 	}
+	logName := filepath.Base(j.logPath)
 	actionsURL := strings.TrimSpace(cfg.ActionsURL)
+	if tracker != nil && strings.TrimSpace(j.runID) != "" {
+		tracker.markRunning(j.runID)
+	}
 	defer func() {
-		if err := notifyGotify(cfg, p, pipelineFile, branch, commitSHA, status, detail, logName); err != nil {
+		if tracker != nil && strings.TrimSpace(j.runID) != "" {
+			tracker.finish(j.runID, status, detail, commitSHA)
+		}
+		if removed, err := pruneServerLogs(filepath.Join(cfg.WorkDir, "logs"), cfg.LogRetentionDays, cfg.LogRetentionCount); err != nil {
+			log.Printf("pipe: log prune failed: %v", err)
+		} else if removed > 0 {
+			log.Printf("pipe: log prune removed=%d", removed)
+		}
+		if err := notifyGotify(cfg, p, pipelineFile, branch, commitSHA, status, detail, logName, j.runID); err != nil {
 			log.Printf("pipe: gotify notify failed: %v", err)
 		}
 	}()
 
+	repoName, err := sanitizeRepo(p.Repo)
+	if err != nil {
+		detail = fmt.Sprintf("invalid repo: %v", err)
+		log.Printf("pipe: %s", detail)
+		return
+	}
+
 	repoDir := filepath.Join(cfg.WorkDir, repoName)
 	cloneURL := strings.TrimRight(cfg.CloneBaseURL, "/") + "/" + repoName
-	lf, err := os.Create(j.logPath)
+	lf, err := os.OpenFile(j.logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o640)
 	if err != nil {
 		log.Printf("pipe: cannot create log %s: %v", j.logPath, err)
 		lf = os.Stdout
@@ -284,6 +415,12 @@ func processJob(j job, cfg ServerConfig) {
 		logf("%s", detail)
 		return
 	}
+	if !pipelineMatchesLabels(pipeline.Labels, cfg.Labels) {
+		status = jobStatusIgnored
+		detail = fmt.Sprintf("labels mismatch pipeline=%v server=%v", pipeline.Labels, cfg.Labels)
+		logf("%s", detail)
+		return
+	}
 
 	envMap := map[string]string{
 		"PIPE_REPO":     p.Repo,
@@ -300,6 +437,9 @@ func processJob(j job, cfg ServerConfig) {
 		Dir:             repoDir,
 		Branch:          branch,
 		Output:          out,
+		NoColor:         cfg.NoColor,
+		LogFormat:       cfg.LogFormat,
+		PullPolicy:      cfg.PullPolicy,
 		Executor:        cfg.Executor,
 		ContainerEngine: cfg.ContainerEngine,
 		ContainerSocket: cfg.ContainerSocket,
@@ -322,19 +462,24 @@ func processJob(j job, cfg ServerConfig) {
 	logf("OK  repo=%s branch=%s", p.Repo, branch)
 }
 
-func notifyGotify(cfg ServerConfig, p pushPayload, pipelineFile, branch, commit string, status jobResultStatus, detail, logName string) error {
+func notifyGotify(cfg ServerConfig, p pushPayload, pipelineFile, branch, commit string, status jobResultStatus, detail, logName, runID string) error {
 	if !shouldNotifyGotify(cfg, status) {
 		return nil
 	}
 	if commit == "" {
 		commit = "unknown"
 	}
+	if strings.TrimSpace(runID) == "" {
+		runID = "n/a"
+	}
+
+	statusLabel := strings.ToUpper(string(status))
 
 	payload := map[string]any{
-		"title": fmt.Sprintf("pipe %s %s@%s", strings.ToUpper(string(status)), p.Repo, branch),
+		"title": fmt.Sprintf("pipe %s %s@%s", statusLabel, p.Repo, branch),
 		"message": fmt.Sprintf(
-			"repo=%s\nbranch=%s\npipeline=%s\nref=%s\ncommit=%s\nstatus=%s\ndetail=%s\nlog=%s",
-			p.Repo, branch, pipelineFile, p.Ref, commit, status, detail, logName,
+			"status=%s\ndetail=%s\nrepo=%s\nbranch=%s\npipeline=%s\nref=%s\ncommit=%s\nrun=%s\nlog=%s",
+			statusLabel, detail, p.Repo, branch, pipelineFile, p.Ref, commit, runID, logName,
 		),
 		"priority": cfg.GotifyPriority,
 	}
@@ -378,6 +523,189 @@ func shouldNotifyGotify(cfg ServerConfig, status jobResultStatus) bool {
 		return status == jobStatusFail
 	default:
 		return true
+	}
+}
+
+func validateServerRuntime(cfg ServerConfig) error {
+	mode, err := normalizeExecutorMode(cfg.Executor)
+	if err != nil {
+		return err
+	}
+	if _, err := normalizePullPolicy(cfg.PullPolicy); err != nil {
+		return err
+	}
+	if mode == "host" {
+		log.Printf("pipe: runtime preflight executor=host")
+		return nil
+	}
+
+	rt, err := detectContainerRuntime(cfg.ContainerEngine, cfg.ContainerSocket)
+	if err != nil {
+		if mode == "container" {
+			return err
+		}
+		log.Printf("pipe: runtime preflight auto mode could not detect container runtime: %v", err)
+		return nil
+	}
+
+	socketLabel := "default context"
+	if rt.SocketPath != "" {
+		socketLabel = rt.SocketPath
+	}
+	log.Printf("pipe: runtime preflight executor=%s engine=%s socket=%s", mode, rt.Name, socketLabel)
+	return nil
+}
+
+func parseLabelMap(raw []string) (map[string]string, error) {
+	out := make(map[string]string, len(raw))
+	for _, item := range raw {
+		v := strings.TrimSpace(item)
+		if v == "" {
+			continue
+		}
+		parts := strings.SplitN(v, "=", 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("expected key=value, got %q", item)
+		}
+		key := strings.TrimSpace(parts[0])
+		val := strings.TrimSpace(parts[1])
+		if key == "" {
+			return nil, fmt.Errorf("empty label key in %q", item)
+		}
+		if strings.ContainsAny(key, " \t\n\r=,") {
+			return nil, fmt.Errorf("invalid label key %q", key)
+		}
+		out[key] = val
+	}
+	return out, nil
+}
+
+func pipelineMatchesLabels(required, available map[string]string) bool {
+	if len(required) == 0 {
+		return true
+	}
+	for key, expected := range required {
+		got, ok := available[key]
+		if !ok {
+			return false
+		}
+		if strings.TrimSpace(expected) == "" || expected == "*" {
+			continue
+		}
+		if got == "*" {
+			continue
+		}
+		if got != expected {
+			return false
+		}
+	}
+	return true
+}
+
+func pruneServerLogs(logDir string, retentionDays, retentionCount int) (int, error) {
+	if retentionDays <= 0 && retentionCount <= 0 {
+		return 0, nil
+	}
+	entries, err := os.ReadDir(logDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+
+	type logItem struct {
+		path    string
+		modTime time.Time
+	}
+	items := make([]logItem, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !strings.HasSuffix(strings.ToLower(name), ".log") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		items = append(items, logItem{
+			path:    filepath.Join(logDir, name),
+			modTime: info.ModTime(),
+		})
+	}
+
+	removed := 0
+	candidates := make([]logItem, 0, len(items))
+	if retentionDays > 0 {
+		cutoff := time.Now().Add(-time.Duration(retentionDays) * 24 * time.Hour)
+		for _, item := range items {
+			if item.modTime.Before(cutoff) {
+				if err := os.Remove(item.path); err == nil {
+					removed++
+					continue
+				}
+			}
+			candidates = append(candidates, item)
+		}
+	} else {
+		candidates = append(candidates, items...)
+	}
+
+	if retentionCount > 0 && len(candidates) > retentionCount {
+		sort.Slice(candidates, func(i, j int) bool {
+			return candidates[i].modTime.Before(candidates[j].modTime)
+		})
+		toDelete := candidates[:len(candidates)-retentionCount]
+		for _, item := range toDelete {
+			if err := os.Remove(item.path); err == nil {
+				removed++
+			}
+		}
+	}
+
+	return removed, nil
+}
+
+func resolveRunLogPath(logDir, logName string) (string, error) {
+	raw := strings.TrimSpace(logName)
+	if raw == "" {
+		return "", fmt.Errorf("invalid log name")
+	}
+	if raw != filepath.Base(raw) {
+		return "", fmt.Errorf("invalid log name")
+	}
+	name := filepath.Base(raw)
+	if name == "" || name == "." || name == ".." {
+		return "", fmt.Errorf("invalid log name")
+	}
+	if strings.ContainsAny(name, "/\\\x00") {
+		return "", fmt.Errorf("invalid log name")
+	}
+	return filepath.Join(logDir, name), nil
+}
+
+func parseRunsListLimit(raw string) int {
+	if strings.TrimSpace(raw) == "" {
+		return defaultRunsListLimit
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || n <= 0 {
+		return defaultRunsListLimit
+	}
+	if n > maxRunsListLimit {
+		return maxRunsListLimit
+	}
+	return n
+}
+
+func writeJSON(w http.ResponseWriter, status int, body any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(body); err != nil {
+		log.Printf("pipe: write json response failed: %v", err)
 	}
 }
 

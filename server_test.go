@@ -4,8 +4,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSanitizeRepo(t *testing.T) {
@@ -211,6 +214,110 @@ func TestShouldNotifyGotify(t *testing.T) {
 	}
 }
 
+func TestParseRunsListLimit(t *testing.T) {
+	if got := parseRunsListLimit(""); got != defaultRunsListLimit {
+		t.Fatalf("unexpected default limit: %d", got)
+	}
+	if got := parseRunsListLimit("abc"); got != defaultRunsListLimit {
+		t.Fatalf("unexpected invalid limit fallback: %d", got)
+	}
+	if got := parseRunsListLimit("-1"); got != defaultRunsListLimit {
+		t.Fatalf("unexpected negative limit fallback: %d", got)
+	}
+	if got := parseRunsListLimit("15"); got != 15 {
+		t.Fatalf("unexpected explicit limit: %d", got)
+	}
+	if got := parseRunsListLimit("9999"); got != maxRunsListLimit {
+		t.Fatalf("unexpected capped limit: %d", got)
+	}
+}
+
+func TestResolveRunLogPath(t *testing.T) {
+	logDir := "/tmp/pipe-logs"
+
+	got, err := resolveRunLogPath(logDir, "repo-ci-1.log")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != filepath.Join(logDir, "repo-ci-1.log") {
+		t.Fatalf("unexpected log path: %q", got)
+	}
+
+	if _, err := resolveRunLogPath(logDir, "../secret.log"); err == nil {
+		t.Fatal("expected traversal log name to be rejected")
+	}
+}
+
+func TestValidateServerRuntime(t *testing.T) {
+	if err := validateServerRuntime(ServerConfig{Executor: "host"}); err != nil {
+		t.Fatalf("host preflight should pass: %v", err)
+	}
+
+	if err := validateServerRuntime(ServerConfig{Executor: "wat"}); err == nil {
+		t.Fatal("expected invalid executor mode to fail")
+	}
+}
+
+func TestParseLabelMap(t *testing.T) {
+	got, err := parseLabelMap([]string{"region=mx", "docker=true"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got["region"] != "mx" || got["docker"] != "true" {
+		t.Fatalf("unexpected labels: %#v", got)
+	}
+	if _, err := parseLabelMap([]string{"broken"}); err == nil {
+		t.Fatal("expected error for invalid label format")
+	}
+}
+
+func TestPipelineMatchesLabels(t *testing.T) {
+	if !pipelineMatchesLabels(map[string]string{"region": "mx"}, map[string]string{"region": "mx"}) {
+		t.Fatal("expected exact label match")
+	}
+	if pipelineMatchesLabels(map[string]string{"region": "mx"}, map[string]string{"region": "us"}) {
+		t.Fatal("did not expect label mismatch to pass")
+	}
+	if !pipelineMatchesLabels(map[string]string{"region": "*"}, map[string]string{"region": "us"}) {
+		t.Fatal("expected wildcard requirement to pass")
+	}
+}
+
+func TestPruneServerLogs(t *testing.T) {
+	dir := t.TempDir()
+	oldLog := filepath.Join(dir, "old.log")
+	newLog := filepath.Join(dir, "new.log")
+	if err := os.WriteFile(oldLog, []byte("old"), 0o644); err != nil {
+		t.Fatalf("write old log: %v", err)
+	}
+	if err := os.WriteFile(newLog, []byte("new"), 0o644); err != nil {
+		t.Fatalf("write new log: %v", err)
+	}
+	oldTime := time.Now().Add(-72 * time.Hour)
+	if err := os.Chtimes(oldLog, oldTime, oldTime); err != nil {
+		t.Fatalf("chtimes old log: %v", err)
+	}
+
+	removed, err := pruneServerLogs(dir, 1, 0)
+	if err != nil {
+		t.Fatalf("pruneServerLogs returned error: %v", err)
+	}
+	if removed == 0 {
+		t.Fatal("expected at least one log file to be pruned by age")
+	}
+	if _, err := os.Stat(oldLog); !os.IsNotExist(err) {
+		t.Fatalf("expected old log to be removed, stat err=%v", err)
+	}
+
+	removed, err = pruneServerLogs(dir, 0, 1)
+	if err != nil {
+		t.Fatalf("pruneServerLogs count-mode error: %v", err)
+	}
+	if removed != 0 {
+		t.Fatalf("did not expect extra removals, got %d", removed)
+	}
+}
+
 func TestNotifyGotify(t *testing.T) {
 	type gotifyRequest struct {
 		Title    string `json:"title"`
@@ -243,7 +350,7 @@ func TestNotifyGotify(t *testing.T) {
 	}, pushPayload{
 		Repo: "pipe",
 		Ref:  "refs/heads/main",
-	}, ".pipe/ci.yml", "main", "abc123", jobStatusOK, "pipeline passed", "pipe-123.log")
+	}, ".pipe/ci.yml", "main", "abc123", jobStatusOK, "pipeline passed", "pipe-123.log", "run-123")
 	if err != nil {
 		t.Fatalf("notifyGotify returned error: %v", err)
 	}
@@ -272,7 +379,7 @@ func TestNotifyGotifyWithToken(t *testing.T) {
 		GotifyToken:    "secret-token",
 		GotifyPriority: 5,
 		GotifyOn:       "all",
-	}, pushPayload{Repo: "pipe", Ref: "refs/heads/main"}, ".pipe/release.yml", "main", "abc123", jobStatusOK, "pipeline passed", "pipe-123.log")
+	}, pushPayload{Repo: "pipe", Ref: "refs/heads/main"}, ".pipe/release.yml", "main", "abc123", jobStatusOK, "pipeline passed", "pipe-123.log", "run-456")
 	if err != nil {
 		t.Fatalf("notifyGotify returned error: %v", err)
 	}
@@ -291,7 +398,7 @@ func TestNotifyGotifyErrorStatus(t *testing.T) {
 		GotifyEndpoint: srv.URL,
 		GotifyPriority: 5,
 		GotifyOn:       "all",
-	}, pushPayload{Repo: "pipe", Ref: "refs/heads/main"}, ".pipe/ci.yml", "main", "abc123", jobStatusFail, "pipeline failed", "pipe-123.log")
+	}, pushPayload{Repo: "pipe", Ref: "refs/heads/main"}, ".pipe/ci.yml", "main", "abc123", jobStatusFail, "pipeline failed", "pipe-123.log", "run-789")
 	if err == nil {
 		t.Fatal("expected error")
 	}

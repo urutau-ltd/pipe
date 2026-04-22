@@ -12,25 +12,45 @@ import (
 
 // Pipeline is the parsed representation of a .pipe.yml file.
 type Pipeline struct {
+	Name     string            `yaml:"name"`
+	Image    string            `yaml:"image"`
+	Env      map[string]string `yaml:"env"`
+	Labels   map[string]string `yaml:"labels"`
+	Secrets  []string          `yaml:"secrets"`
+	Services []Service         `yaml:"services"`
+	Steps    []Step            `yaml:"steps"`
+}
+
+// Service is a sidecar container started before steps and kept running during
+// the pipeline.
+type Service struct {
 	Name    string            `yaml:"name"`
 	Image   string            `yaml:"image"`
 	Env     map[string]string `yaml:"env"`
-	Secrets []string          `yaml:"secrets"`
-	Steps   []Step            `yaml:"steps"`
+	Run     string            `yaml:"run"`
+	Command []string          `yaml:"command"`
 }
 
 // Step is a single CI step.
 type Step struct {
-	Name     string   `yaml:"name"`
-	Run      string   `yaml:"run"`
-	Image    string   `yaml:"image"`
-	Parallel bool     `yaml:"parallel"` // if true, runs concurrently with adjacent parallel steps
-	Branches []string `yaml:"branches"` // if set, only runs on these branches
+	Name       string   `yaml:"name"`
+	Run        string   `yaml:"run"`
+	Image      string   `yaml:"image"`
+	Parallel   bool     `yaml:"parallel"`   // if true, runs concurrently with adjacent parallel steps
+	Branches   []string `yaml:"branches"`   // if set, only runs on these branches
+	Needs      []string `yaml:"needs"`      // explicit dependencies
+	DependsOn  []string `yaml:"depends_on"` // alias for needs
+	Failure    string   `yaml:"failure"`    // "ignore" to continue on step failure
+	RunsOn     []string `yaml:"runs_on"`    // success, failure, always
+	IgnoreStep bool     `yaml:"ignore"`     // optional explicit skip
 }
 
 // ShouldRun reports whether the step should run for the given branch.
 // An empty branch argument disables filtering (step always runs).
-func (s *Step) ShouldRun(branch string) bool {
+func (s Step) ShouldRun(branch string) bool {
+	if s.IgnoreStep {
+		return false
+	}
 	if len(s.Branches) == 0 || branch == "" {
 		return true
 	}
@@ -40,6 +60,62 @@ func (s *Step) ShouldRun(branch string) bool {
 		}
 	}
 	return false
+}
+
+// DependencyNames returns explicit step dependencies, accepting both
+// "needs" and "depends_on".
+func (s Step) DependencyNames() []string {
+	if len(s.Needs) == 0 {
+		return append([]string{}, s.DependsOn...)
+	}
+	if len(s.DependsOn) == 0 {
+		return append([]string{}, s.Needs...)
+	}
+
+	out := append([]string{}, s.Needs...)
+	seen := make(map[string]struct{}, len(s.Needs))
+	for _, d := range s.Needs {
+		seen[d] = struct{}{}
+	}
+	for _, d := range s.DependsOn {
+		if _, ok := seen[d]; ok {
+			continue
+		}
+		seen[d] = struct{}{}
+		out = append(out, d)
+	}
+	return out
+}
+
+// FailureIgnored reports whether a step error should be ignored.
+func (s Step) FailureIgnored() bool {
+	return strings.EqualFold(strings.TrimSpace(s.Failure), "ignore")
+}
+
+// ShouldRunForPipelineStatus evaluates runs_on against current pipeline state.
+// Default behavior matches classic CI flow: only run while pipeline is healthy.
+func (s Step) ShouldRunForPipelineStatus(pipelineFailed bool) bool {
+	if len(s.RunsOn) == 0 {
+		return !pipelineFailed
+	}
+
+	var allowSuccess, allowFailure bool
+	for _, raw := range s.RunsOn {
+		mode := strings.ToLower(strings.TrimSpace(raw))
+		switch mode {
+		case "always":
+			allowSuccess = true
+			allowFailure = true
+		case "success":
+			allowSuccess = true
+		case "failure", "failed":
+			allowFailure = true
+		}
+	}
+	if pipelineFailed {
+		return allowFailure
+	}
+	return allowSuccess
 }
 
 // LoadPipeline reads and parses a pipeline file from dir/filename.

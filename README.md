@@ -65,6 +65,7 @@ $ pipe run
 ### Container images
 
 `image` at top-level applies to all steps. `step.image` overrides per step.
+Server/global `--image` is only a fallback when pipeline/step images are absent.
 
 ```yaml
 name: polyglot
@@ -80,7 +81,15 @@ steps:
 ```
 
 Some images do not add toolchain binaries to `PATH` by default. When needed, set
-`env.PATH` explicitly in the pipeline.
+`env.PATH` explicitly in the pipeline. `pipe` also hardens overridden `PATH`
+values by appending standard system directories (`/usr/bin`, `/bin`, etc.) when
+they were omitted.
+
+Pull behavior is configurable with `--pull-policy`:
+
+- `missing` (default): pull only when the image is absent locally
+- `always`: refresh image before use
+- `never`: never pull (run fails if the image is not already cached)
 
 ### Parallel steps
 
@@ -121,6 +130,65 @@ pass `--branch`:
 pipe run --branch main
 ```
 
+### DAG Dependencies (`needs` / `depends_on`)
+
+`pipe` now supports explicit DAG execution. Use either `needs` or
+`depends_on` (alias):
+
+```yaml
+steps:
+  - name: lint
+    run: deno lint
+
+  - name: test
+    run: deno test -A
+    needs: [lint]
+
+  - name: build
+    run: deno compile -A --output dist/app main.ts
+    depends_on: [test]
+```
+
+Steps without `needs`/`depends_on` keep legacy order
+(`parallel: true` groups + sequential groups). Steps with explicit dependencies
+override that default for themselves.
+
+### Services (Sidecars)
+
+Run sidecar containers (Postgres, Redis, etc.) for the whole pipeline:
+
+```yaml
+services:
+  - name: postgres
+    image: docker.io/library/postgres:16
+    env:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: app
+
+steps:
+  - name: integration
+    run: go test -tags=integration ./...
+```
+
+Services require container mode/runtime.
+
+### Failure Modes and Hooks
+
+```yaml
+steps:
+  - name: test
+    run: go test ./...
+    failure: ignore # continue even if it fails
+
+  - name: notify-fail
+    run: ./scripts/notify.sh
+    runs_on: [failure] # success, failure, always
+
+  - name: cleanup
+    run: ./scripts/cleanup.sh
+    runs_on: [always]
+```
+
 ## Environment variables
 
 `pipe` injects the following variables into every step. In server mode these
@@ -137,6 +205,7 @@ reflect the push event. In local mode they reflect the current git state.
 | `PIPE_EXECUTOR_MODE`    | Effective executor mode (`auto`, `container`, `host`) |
 | `PIPE_CONTAINER_ENGINE` | Container runtime selected (`docker` or `podman`)     |
 | `PIPE_CONTAINER_SOCKET` | Selected unix socket path (when available)            |
+| `PIPE_PULL_POLICY`      | Effective pull policy (`missing`, `always`, `never`)  |
 
 Pipeline-level `env:` keys are also available, overridable by the above.
 
@@ -145,6 +214,8 @@ Pipeline-level `env:` keys are also available, overridable by the above.
 `pipe` supports secret injection and log masking:
 
 - `--secret-env NAME` injects host env var `NAME` into the run environment
+- append `?` to make it optional (`--secret-env GITHUB_TOKEN?` or `secrets:
+  [GITHUB_TOKEN?]`)
 - values from `--secret-env` are redacted in stdout and log files
 - values of env vars that look sensitive (`*TOKEN*`, `*SECRET*`, `*PASSWORD*`,
   etc.) are also redacted
@@ -158,13 +229,14 @@ name: my-app
 image: docker.io/library/golang:1.26-bookworm
 secrets:
   - GITHUB_TOKEN
-  - CR_PAT
+  - CR_PAT?
 ```
 
 CLI examples:
 
 ```bash
 pipe run --secret-env GITHUB_TOKEN --secret-env CR_PAT
+pipe run --secret-env GITHUB_TOKEN --secret-env CR_PAT?
 pipe run --mask "https://token@github.com"
 ```
 
@@ -277,8 +349,9 @@ pipe run --pipeline release --branch main
 pipe run --pipeline nightly --branch main
 ```
 
-Server mode uses a single runner. Send `"pipeline":"ci"` for one pipeline, or
-`"pipelines":["ci","release"]` to run several in one push.
+Server mode uses a worker pool (`--workers`, default `1`). Send
+`"pipeline":"ci"` for one pipeline, or `"pipelines":["ci","release"]` to run
+several in one push.
 
 ## Server mode (soft-serve integration)
 
@@ -288,7 +361,14 @@ pipe server --port 8080
 pipe server --clone ssh://git.example.com:23231
 pipe server --workdir /var/lib/pipe
 pipe server --executor auto --engine auto
+pipe server --workers 2 --queue-size 128
+pipe server --pull-policy missing
+pipe server --label region=mx --label docker=true
+pipe server --log-retention-days 14 --log-retention-count 2000
+pipe server --log-retention-days 0 --log-retention-count 0  # disable pruning
 pipe server --image docker.io/library/golang:1.26-bookworm
+pipe server --log-format plain
+pipe server --no-color
 pipe server --secret-env GITHUB_TOKEN --secret-env CR_PAT
 pipe server --actions-url "https://raw.githubusercontent.com/acme/pipe-actions/main"
 pipe server --gotify-endpoint "https://gotify.local/message" --gotify-token "$GOTIFY_TOKEN"
@@ -300,13 +380,37 @@ pipe server --gotify-endpoint "https://gotify.local/message" --gotify-token "$GO
 - request body is capped at `64KiB`
 - only branch refs (`refs/heads/*`) are accepted
 - server uses sane read/write timeout defaults
+- startup preflight validates executor/runtime + pull policy
+- periodic log pruning keeps disk usage bounded (`--log-retention-*`)
+
+### Worker Labels
+
+Use labels to bind pipelines to specific runner instances.
+
+Pipeline:
+
+```yaml
+labels:
+  region: mx
+  docker: "true"
+```
+
+Server:
+
+```bash
+pipe server --label region=mx --label docker=true
+```
+
+A pipeline is executed only when all required labels match.
 
 ### Endpoints
 
-| Method | Path      | Description                             |
-| ------ | --------- | --------------------------------------- |
-| `POST` | `/run`    | Trigger a pipeline run                  |
-| `GET`  | `/health` | Health check for Gatus / load balancers |
+| Method | Path      | Description                                              |
+| ------ | --------- | -------------------------------------------------------- |
+| `POST` | `/run`    | Trigger one or many pipeline runs                        |
+| `GET`  | `/runs`   | Inspect run state (`queued`, `running`, `ok`, `fail`)    |
+| `GET`  | `/runs/log` | Fetch a run log file (`?id=<run-id>`)                  |
+| `GET`  | `/health` | Health check for Gatus / load balancers                  |
 
 ### Request body (`/run`)
 
@@ -324,102 +428,35 @@ pipe server --gotify-endpoint "https://gotify.local/message" --gotify-token "$GO
 Use either `pipeline` or `pipelines` (not both). If neither is sent, server uses
 the default file configured with `--file` (default `.pipe.yml`).
 
+`POST /run` responses now include `runs=<id1,id2,...>` so you can poll status:
+
+```bash
+curl -s "http://pipe:9000/runs?id=run-1713800000-1"
+curl -s "http://pipe:9000/runs?limit=50"
+curl -s "http://pipe:9000/runs/log?id=run-1713800000-1"
+```
+
 ### soft-serve post-receive hook
 
-Place this at `/opt/containers/soft-serve/hooks/post-receive` (chmod +x):
+Use the maintained hook from examples:
 
-```sh
-#!/bin/sh
-set -eu
-
-post_json() {
-    url="$1"
-    payload="$2"
-
-    if command -v curl >/dev/null 2>&1; then
-        curl -fsS -X POST "$url" \
-            -H "Content-Type: application/json" \
-            -d "$payload" >/dev/null
-        return 0
-    fi
-
-    if command -v wget >/dev/null 2>&1; then
-        wget -q -O /dev/null \
-            --header="Content-Type: application/json" \
-            --post-data="$payload" \
-            "$url"
-        return 0
-    fi
-
-    echo "pipe hook: curl or wget is required" >&2
-    return 127
-}
-
-while read -r OLD NEW REF; do
-    REPO=$(basename "$PWD" .git)
-    PAYLOAD=$(printf '{"repo":"%s","ref":"%s","old":"%s","new":"%s"}' \
-        "$REPO" "$REF" "$OLD" "$NEW")
-    post_json "http://pipe:9000/run" "$PAYLOAD"
-done
+```bash
+cp examples/soft-serve-post-receive.sh /opt/containers/soft-serve/hooks/post-receive
+chmod +x /opt/containers/soft-serve/hooks/post-receive
 ```
 
-### soft-serve hook for many pipelines
+Useful environment overrides (in soft-serve container/service):
 
-Single-runner example selecting one or many `.pipe/*.yml` files by branch:
-
-```sh
-#!/bin/sh
-set -eu
-
-post_json() {
-    url="$1"
-    payload="$2"
-
-    if command -v curl >/dev/null 2>&1; then
-        curl -fsS -X POST "$url" \
-            -H "Content-Type: application/json" \
-            -d "$payload" >/dev/null
-        return 0
-    fi
-
-    if command -v wget >/dev/null 2>&1; then
-        wget -q -O /dev/null \
-            --header="Content-Type: application/json" \
-            --post-data="$payload" \
-            "$url"
-        return 0
-    fi
-
-    echo "pipe hook: curl or wget is required" >&2
-    return 127
-}
-
-while read -r OLD NEW REF; do
-    REPO=$(basename "$PWD" .git)
-    case "$REF" in
-      refs/heads/main)
-        PIPELINES='["ci","release"]'
-        ;;
-      refs/heads/nightly)
-        PIPELINES='["nightly"]'
-        ;;
-      *)
-        PIPELINES='["ci"]'
-        ;;
-    esac
-
-    PAYLOAD=$(printf '{"repo":"%s","ref":"%s","old":"%s","new":"%s","pipelines":%s}' \
-      "$REPO" "$REF" "$OLD" "$NEW" "$PIPELINES")
-    post_json "http://pipe:9000/run" "$PAYLOAD"
-done
-```
-
-That is usually enough for one `pipe` instance to cover all repositories and all
-workflow types (`ci`, `release`, `nightly`, etc.).
+- `PIPE_ENDPOINT` (default `http://pipe:9000`)
+- `PIPELINES_MAIN` (default `["ci","release"]`)
+- `PIPELINES_NIGHTLY` (default `["nightly"]`)
+- `PIPELINES_DEFAULT` (default `["ci"]`)
+- `PIPE_WAIT=1` to poll `/runs` until done and print status/log URL
 
 ### Optional Gotify notifications
 
-When `--gotify-endpoint` is set, `pipe` can emit minimal notifications:
+When `--gotify-endpoint` is set, `pipe` emits notifications with status, detail,
+pipeline, commit, run id, and log file:
 
 - `--gotify-token <token>`: app token sent as `X-Gotify-Key`
 - `--gotify-on all` (default): notify success and failure
@@ -454,8 +491,20 @@ pipe:
     - "docker"
     - "--socket"
     - "/var/run/docker.sock"
+    - "--workers"
+    - "2"
+    - "--queue-size"
+    - "128"
+    - "--pull-policy"
+    - "missing"
+    - "--log-retention-days"
+    - "14"
+    - "--log-retention-count"
+    - "2000"
     - "--image"
     - "docker.io/library/golang:1.26-bookworm"
+    - "--log-format"
+    - "plain"
     - "--secret-env"
     - "GITHUB_TOKEN"
     - "--secret-env"
@@ -487,6 +536,13 @@ For rootless Podman, use your user socket instead (for example
 In server mode, each run writes a log file to
 `<workdir>/logs/<repo>-<pipeline>-<timestamp>-<index>.log`. All output is also
 streamed to stdout, visible in [Dozzle](https://dozzle.dev).
+
+Log rendering modes:
+
+- `--log-format auto` (default): pretty box in TTY, line-friendly stream in non-interactive outputs (Dozzle-friendly)
+- `--log-format pretty`: force decorated terminal-style output
+- `--log-format plain`: force stream layout
+- `--no-color`: disable ANSI color codes (format remains the same)
 
 ## Pipe Actions
 
@@ -527,6 +583,12 @@ Security baseline:
 - pin immutable URLs when possible (commit SHA/tag, not moving branches)
 - keep the action repo private/internal when appropriate
 - treat actions like code dependencies (review and version them)
+
+## Release tags
+
+`pipe` now enforces semver tags and blocks accidental `v1.*` tags in release
+workflows. Use the `v2.x.y` line for point releases (for example, if `v1.1.5`
+was an accidental tag for v2 code, release the correction as a `v2.x` tag).
 
 ### I just want to tidy-up my YAML, not remote scripts!
 
@@ -585,6 +647,8 @@ See the [`examples/`](./examples/) directory:
 
 | File                     | Demonstrates                                        |
 | ------------------------ | --------------------------------------------------- |
+| `advanced-ci.pipe.yml`   | DAG (`needs`), services, labels, and failure hooks |
+| `soft-serve-post-receive.sh` | Hardened soft-serve hook with branch mapping + run polling |
 | `go-project.pipe.yml`    | Parallel lint + test, build, deploy                 |
 | `rust-project.pipe.yml`  | cargo fmt + clippy, test, release build, deploy     |
 | `deno-project.pipe.yml`  | deno fmt + lint, test, compile, deploy              |

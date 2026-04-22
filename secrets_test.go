@@ -26,6 +26,23 @@ func TestInjectSecretEnvMissing(t *testing.T) {
 	}
 }
 
+func TestInjectSecretEnvOptionalMissing(t *testing.T) {
+	env := map[string]string{}
+	if err := injectSecretEnv(env, []string{"PIPE_DOES_NOT_EXIST?"}); err != nil {
+		t.Fatalf("did not expect error for optional missing secret env: %v", err)
+	}
+}
+
+func TestParseSecretEnvRef(t *testing.T) {
+	name, optional, err := parseSecretEnvRef("GITHUB_TOKEN?")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if name != "GITHUB_TOKEN" || !optional {
+		t.Fatalf("unexpected parse result: name=%q optional=%v", name, optional)
+	}
+}
+
 func TestWrapWithSecretRedactor(t *testing.T) {
 	t.Setenv("PIPE_TEST_PASSWORD", "host-pass-12345")
 

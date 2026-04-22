@@ -1,0 +1,52 @@
+# examples/advanced-ci.pipe.yml
+# Advanced pipeline using DAG dependencies, sidecar services, and failure hooks.
+
+name: advanced-ci
+image: docker.io/library/golang:1.26-bookworm
+
+labels:
+  docker: "true"
+
+env:
+  PATH: /usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+  DB_HOST: postgres
+  DB_PORT: "5432"
+  DB_USER: postgres
+  DB_PASSWORD: postgres
+  DB_NAME: app
+
+services:
+  - name: postgres
+    image: docker.io/library/postgres:16
+    env:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: app
+
+steps:
+  - name: lint
+    run: go vet ./...
+
+  - name: unit
+    run: go test ./...
+    needs: [lint]
+
+  - name: integration
+    run: go test -tags=integration ./...
+    depends_on: [unit]
+
+  - name: package
+    run: |
+      mkdir -p dist
+      CGO_ENABLED=0 go build -o dist/app .
+    needs: [integration]
+
+  - name: notify-failure
+    run: ./scripts/notify-failure.sh
+    runs_on: [failure]
+    needs: [lint]
+
+  - name: cleanup
+    run: ./scripts/cleanup.sh
+    runs_on: [always]
+    needs: [package, notify-failure]
