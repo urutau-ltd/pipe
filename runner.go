@@ -83,14 +83,7 @@ func RunPipeline(p *Pipeline, opts RunOptions) []StepResult {
 		format:  resolveLogFormat(opts.Output, opts.LogFormat),
 	}
 
-	// Merge env: pipeline base, then caller overrides.
-	env := make(map[string]string, len(p.Env)+len(opts.Env))
-	for k, v := range p.Env {
-		env[k] = v
-	}
-	for k, v := range opts.Env {
-		env[k] = v
-	}
+	env := mergeRunEnv(p.Env, opts.Env)
 	// Keep core system paths reachable even when pipeline PATH is overridden.
 	hardenPathEnv(env)
 	secretEnvNames := append([]string{}, p.Secrets...)
@@ -566,6 +559,9 @@ func appendGitSafeDirectoryEnv(args []string, env map[string]string) []string {
 func envPairs(env map[string]string) []string {
 	keys := make([]string, 0, len(env))
 	for k := range env {
+		if isReservedEnvKey(k) {
+			continue
+		}
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
@@ -575,6 +571,26 @@ func envPairs(env map[string]string) []string {
 		out = append(out, fmt.Sprintf("%s=%s", k, env[k]))
 	}
 	return out
+}
+
+func mergeRunEnv(base, override map[string]string) map[string]string {
+	env := make(map[string]string, len(base)+len(override))
+	for k, v := range base {
+		env[k] = v
+	}
+	for k, v := range override {
+		env[k] = v
+	}
+	return env
+}
+
+func isReservedEnvKey(key string) bool {
+	switch key {
+	case "PATH+":
+		return true
+	default:
+		return false
+	}
 }
 
 func hardenPathEnv(env map[string]string) {
@@ -625,12 +641,31 @@ func buildStepScript(run string, env map[string]string) string {
 	sb.WriteString("set -euo pipefail\n")
 	sb.WriteString(pathBootstrapShellSnippet)
 	sb.WriteString("\n")
+	if snippet := buildPathPrependShellSnippet(env); snippet != "" {
+		sb.WriteString(snippet)
+		sb.WriteString("\n")
+	}
 	if strings.TrimSpace(env["PIPE_ACTIONS_URL"]) != "" {
 		sb.WriteString(pipeActionShellFunc)
 		sb.WriteString("\n")
 	}
 	sb.WriteString(run)
 	return sb.String()
+}
+
+func buildPathPrependShellSnippet(env map[string]string) string {
+	prepend := strings.TrimSpace(env["PATH+"])
+	if prepend == "" {
+		return ""
+	}
+	return fmt.Sprintf("export PATH=%s\"${PATH:+:$PATH}\"", shellSingleQuote(prepend))
+}
+
+func shellSingleQuote(s string) string {
+	if s == "" {
+		return "''"
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
 }
 
 const pathBootstrapShellSnippet = `

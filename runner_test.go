@@ -33,6 +33,15 @@ func TestBuildStepScript(t *testing.T) {
 			t.Fatalf("missing step body: %q", script)
 		}
 	})
+
+	t.Run("with PATH+ prepend", func(t *testing.T) {
+		script := buildStepScript("echo hi", map[string]string{
+			"PATH+": "/opt/tool/bin:/usr/local/go/bin",
+		})
+		if !strings.Contains(script, `export PATH='/opt/tool/bin:/usr/local/go/bin'"${PATH:+:$PATH}"`) {
+			t.Fatalf("expected PATH+ export in script: %q", script)
+		}
+	})
 }
 
 func TestNormalizeExecutorMode(t *testing.T) {
@@ -136,6 +145,16 @@ func TestHardenPathEnv(t *testing.T) {
 	}
 	if !strings.Contains(path, "/usr/sbin") {
 		t.Fatalf("expected /usr/sbin to be present in hardened PATH, got %q", path)
+	}
+}
+
+func TestEnvPairsSkipsReservedKeys(t *testing.T) {
+	pairs := envPairs(map[string]string{
+		"FOO":   "bar",
+		"PATH+": "/opt/tool/bin",
+	})
+	if len(pairs) != 1 || pairs[0] != "FOO=bar" {
+		t.Fatalf("unexpected env pairs: %#v", pairs)
 	}
 }
 

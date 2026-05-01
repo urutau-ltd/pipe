@@ -9,7 +9,7 @@ env:
   BUILD_DIR: ./dist
   GOOS: linux
   GOARCH: amd64
-  PATH: /usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+  "PATH+": /usr/local/go/bin
 
 steps:
   # ── quality checks run in parallel ────────────────────────────────────────

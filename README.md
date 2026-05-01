@@ -81,9 +81,17 @@ steps:
 ```
 
 Some images do not add toolchain binaries to `PATH` by default. When needed, set
-`env.PATH` explicitly in the pipeline. `pipe` also hardens overridden `PATH`
+`env.PATH` explicitly in the pipeline, or use `env."PATH+"` to prepend entries
+without replacing the runtime default. `pipe` also hardens overridden `PATH`
 values by appending standard system directories (`/usr/bin`, `/bin`, etc.) when
 they were omitted.
+
+Example:
+
+```yaml
+env:
+  "PATH+": /usr/local/go/bin
+```
 
 Pull behavior is configurable with `--pull-policy`:
 
