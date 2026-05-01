@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -63,6 +65,7 @@ type ServerConfig struct {
 	GotifyToken       string
 	GotifyPriority    int
 	GotifyOn          string
+	workspaceManager  *repoWorkspaceManager
 }
 
 type pushPayload struct {
@@ -124,6 +127,9 @@ func StartServer(cfg ServerConfig) {
 	}
 	if cfg.Labels == nil {
 		cfg.Labels = map[string]string{}
+	}
+	if cfg.workspaceManager == nil {
+		cfg.workspaceManager = newRepoWorkspaceManager(cfg.WorkDir)
 	}
 	if err := validateServerRuntime(cfg); err != nil {
 		log.Fatalf("pipe: runtime preflight failed: %v", err)
@@ -352,7 +358,6 @@ func processJob(j job, cfg ServerConfig, tracker *runTracker) {
 		return
 	}
 
-	repoDir := filepath.Join(cfg.WorkDir, repoName)
 	cloneURL := strings.TrimRight(cfg.CloneBaseURL, "/") + "/" + repoName
 	lf, err := os.OpenFile(j.logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o640)
 	if err != nil {
@@ -368,42 +373,28 @@ func processJob(j job, cfg ServerConfig, tracker *runTracker) {
 	}
 
 	logf("triggered  repo=%s ref=%s branch=%s pipeline=%s", p.Repo, p.Ref, branch, pipelineFile)
-
-	if _, err := os.Stat(repoDir); os.IsNotExist(err) {
-		logf("cloning %s", cloneURL)
-		if err := gitRun(out, "clone", cloneURL, repoDir); err != nil {
-			detail = fmt.Sprintf("clone failed: %v", err)
-			logf("%s", detail)
-			return
-		}
-	} else if err != nil {
-		detail = fmt.Sprintf("stat failed: %v", err)
+	workspace, err := cfg.workspaceManager.prepareRun(out, repoWorkspaceRequest{
+		RepoName:  repoName,
+		CloneURL:  cloneURL,
+		Branch:    branch,
+		CommitSHA: p.New,
+		NullSHA:   nullSHA,
+		RunID:     j.runID,
+		Logf:      logf,
+	})
+	if err != nil {
+		detail = err.Error()
 		logf("%s", detail)
 		return
-	} else {
-		logf("fetching %s", repoDir)
-		if err := gitRun(out, "-C", repoDir, "fetch", "--all"); err != nil {
-			detail = fmt.Sprintf("fetch failed: %v", err)
-			logf("%s", detail)
-			return
-		}
-		if err := gitRun(out, "-C", repoDir, "reset", "--hard", "origin/"+branch); err != nil {
-			detail = fmt.Sprintf("reset failed: %v", err)
-			logf("%s", detail)
-			return
-		}
 	}
-
-	const nullSHA = "0000000000000000000000000000000000000000"
-	if p.New != "" && p.New != nullSHA {
-		if err := gitRun(out, "-C", repoDir, "checkout", p.New); err != nil {
-			detail = fmt.Sprintf("checkout failed: %v", err)
-			logf("%s", detail)
-			return
+	defer func() {
+		if err := os.RemoveAll(workspace.RunDir); err != nil {
+			log.Printf("pipe: cleanup run workspace %s failed: %v", workspace.RunDir, err)
 		}
-	}
+	}()
 
-	commitSHA = resolveCommit(repoDir)
+	repoDir := workspace.RunDir
+	commitSHA = workspace.CommitSHA
 	if actionsURL != "" {
 		logf("actions  url=%s", actionsURL)
 	}
@@ -411,7 +402,11 @@ func processJob(j job, cfg ServerConfig, tracker *runTracker) {
 	pipeline, err := LoadPipeline(repoDir, pipelineFile)
 	if err != nil {
 		status = jobStatusIgnored
-		detail = fmt.Sprintf("no pipeline: %v", err)
+		if errors.Is(err, fs.ErrNotExist) {
+			detail = fmt.Sprintf("pipeline %s not present at commit %s", pipelineFile, commitSHA)
+		} else {
+			detail = fmt.Sprintf("no pipeline: %v", err)
+		}
 		logf("%s", detail)
 		return
 	}

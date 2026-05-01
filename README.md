@@ -353,6 +353,13 @@ Server mode uses a worker pool (`--workers`, default `1`). Send
 `"pipeline":"ci"` for one pipeline, or `"pipelines":["ci","release"]` to run
 several in one push.
 
+Server workspaces are also isolated per run. `pipe` keeps a per-repository git
+cache under `<workdir>/repos/<repo>` and prepares each execution in its own
+workspace under `<workdir>/runs/<repo>/<run-id>`. The shared cache is locked
+during clone/fetch/prune/recovery, so concurrent runs never mutate the same
+checkout. If the cache becomes stale after an upstream rebase or force-push,
+`pipe` retries with remote pruning and falls back to re-cloning the cache.
+
 ## Server mode (soft-serve integration)
 
 ```bash
