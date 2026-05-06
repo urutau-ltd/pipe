@@ -79,3 +79,19 @@ func TestRunTrackerTrim(t *testing.T) {
 		t.Fatalf("unexpected run order: %#v", snap.Items)
 	}
 }
+
+func TestRunTrackerTagRefName(t *testing.T) {
+	tracker := newRunTracker(4)
+	runID := tracker.enqueue(pushPayload{
+		Repo: "pipe",
+		Ref:  "refs/tags/v1.2.3",
+	}, ".pipe/release.yml", "release.log")
+
+	rec, ok := tracker.get(runID)
+	if !ok {
+		t.Fatal("expected run to exist")
+	}
+	if rec.Branch != "v1.2.3" {
+		t.Fatalf("expected tracked ref name for tag, got %q", rec.Branch)
+	}
+}

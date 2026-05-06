@@ -1,0 +1,201 @@
+name: pipe-release
+image: docker.io/library/golang:1.26-bookworm
+
+secrets:
+  - REGISTRY_PUSH_USER
+  - REGISTRY_PUSH_PASS
+  - COSIGN_PRIVATE_KEY?
+  - COSIGN_PASSWORD?
+  - COSIGN_PUBLIC_KEY?
+
+env:
+  PATH: /usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+  REGISTRY: nest.urutau-ltd.org
+  IMAGE_NAME: pipe
+  IMAGE_REF: nest.urutau-ltd.org/pipe
+  TOOLS_BIN: /tmp/pipe-tools/bin
+
+steps:
+  - name: validate-tag
+    run: |
+      set -euo pipefail
+      mkdir -p dist
+      TAG="${PIPE_TAG:-}"
+      if [ -z "$TAG" ]; then
+        case "${PIPE_REF:-}" in
+          refs/tags/*) TAG="${PIPE_REF#refs/tags/}" ;;
+          *) echo "release pipeline requires refs/tags/*, got '${PIPE_REF:-}'" >&2; exit 1 ;;
+        esac
+      fi
+      if ! printf '%s\n' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+        echo "Invalid release tag '$TAG'. Expected semver format vMAJOR.MINOR.PATCH." >&2
+        exit 1
+      fi
+      if printf '%s\n' "$TAG" | grep -Eq '^v1\.'; then
+        echo "Tag '$TAG' is blocked: this project now releases on the v2.x line." >&2
+        exit 1
+      fi
+      printf '%s\n' "$TAG" > dist/.release-tag
+      echo "==> release tag $TAG"
+
+  - name: test
+    run: |
+      RACE=""
+      [ "$(go env CGO_ENABLED)" = "1" ] && RACE="-race"
+      go test $RACE -count=1 ./...
+
+  - name: build-binary
+    run: |
+      set -euo pipefail
+      TAG="$(cat dist/.release-tag)"
+      mkdir -p dist
+      CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+        -buildvcs=false \
+        -trimpath \
+        -ldflags="-s -w -X main.version=${TAG}" \
+        -o dist/pipe-linux-amd64 .
+      tar -C dist -czf "dist/pipe-${TAG}-linux-amd64.tar.gz" pipe-linux-amd64
+      sha256sum dist/pipe-linux-amd64 "dist/pipe-${TAG}-linux-amd64.tar.gz" | tee dist/SHA256SUMS
+
+  - name: sbom
+    run: |
+      set -euo pipefail
+      mkdir -p "$TOOLS_BIN" dist
+      GOBIN="$TOOLS_BIN" go install github.com/anchore/syft/cmd/syft@v1.29.0
+      "$TOOLS_BIN/syft" dir:. -o spdx-json=dist/source.spdx.json
+      "$TOOLS_BIN/syft" "file:dist/pipe-linux-amd64" -o spdx-json=dist/binary.spdx.json
+      echo "==> SBOMs written to dist/source.spdx.json and dist/binary.spdx.json"
+
+  - name: image-push
+    image: quay.io/buildah/stable
+    needs: [build-binary]
+    run: |
+      set -euo pipefail
+      TAG="$(cat dist/.release-tag)"
+      buildah build \
+        --storage-driver=vfs \
+        -t "${IMAGE_REF}:${TAG}" \
+        -t "${IMAGE_REF}:latest" \
+        .
+      buildah push \
+        --storage-driver=vfs \
+        --digestfile dist/image.digest \
+        --creds "${REGISTRY_PUSH_USER}:${REGISTRY_PUSH_PASS}" \
+        "${IMAGE_REF}:${TAG}"
+      buildah push \
+        --storage-driver=vfs \
+        --creds "${REGISTRY_PUSH_USER}:${REGISTRY_PUSH_PASS}" \
+        "${IMAGE_REF}:latest"
+      cp dist/image.digest dist/image.digest.raw
+      tr -d '\n' < dist/image.digest.raw > dist/image.digest
+      echo "==> pushed ${IMAGE_REF}:${TAG} and ${IMAGE_REF}:latest"
+      echo "==> digest $(cat dist/image.digest)"
+
+  - name: provenance
+    needs: [build-binary, image-push]
+    run: |
+      set -euo pipefail
+      TAG="$(cat dist/.release-tag)"
+      BUILD_START="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      BINARY_DIGEST="$(sha256sum dist/pipe-linux-amd64 | awk '{print $1}')"
+      IMAGE_DIGEST="$(cat dist/image.digest)"
+      cat > dist/provenance.json <<EOF
+      {
+        "_type": "https://in-toto.io/Statement/v0.1",
+        "predicateType": "https://slsa.dev/provenance/v0.2",
+        "subject": [
+          {
+            "name": "${IMAGE_REF}",
+            "digest": { "sha256": "${IMAGE_DIGEST#sha256:}" }
+          },
+          {
+            "name": "dist/pipe-linux-amd64",
+            "digest": { "sha256": "${BINARY_DIGEST}" }
+          }
+        ],
+        "predicate": {
+          "builder": {
+            "id": "https://nest.urutau-ltd.org/${PIPE_REPO}/pipe@${PIPE_COMMIT}"
+          },
+          "buildType": "urutau-ltd.org/pipe/release/v1",
+          "invocation": {
+            "configSource": {
+              "uri": "git+https://nest.urutau-ltd.org/${PIPE_REPO}",
+              "digest": { "sha1": "${PIPE_COMMIT}" },
+              "entryPoint": ".pipe/release.yml"
+            }
+          },
+          "metadata": {
+            "buildStartedOn": "${BUILD_START}",
+            "completeness": {
+              "parameters": false,
+              "environment": false,
+              "materials": true
+            },
+            "reproducible": false
+          },
+          "materials": [
+            {
+              "uri": "git+https://nest.urutau-ltd.org/${PIPE_REPO}@refs/tags/${TAG}",
+              "digest": { "sha1": "${PIPE_COMMIT}" }
+            },
+            {
+              "uri": "dockerfile:./Dockerfile",
+              "digest": { "sha256": "$(sha256sum Dockerfile | awk '{print $1}')" }
+            }
+          ]
+        }
+      }
+      EOF
+      echo "==> provenance written to dist/provenance.json"
+
+  - name: verify-remote
+    needs: [image-push]
+    run: |
+      set -euo pipefail
+      TAG="$(cat dist/.release-tag)"
+      mkdir -p "$TOOLS_BIN"
+      GOBIN="$TOOLS_BIN" go install github.com/google/go-containerregistry/cmd/crane@v0.20.3
+      DIGEST="$(cat dist/image.digest)"
+      REMOTE_DIGEST="$("$TOOLS_BIN/crane" digest --user "${REGISTRY_PUSH_USER}:${REGISTRY_PUSH_PASS}" "${IMAGE_REF}:${TAG}")"
+      if [ "$REMOTE_DIGEST" != "$DIGEST" ]; then
+        echo "remote digest mismatch: expected '$DIGEST' got '$REMOTE_DIGEST'" >&2
+        exit 1
+      fi
+      echo "==> remote digest verified ${IMAGE_REF}@${REMOTE_DIGEST}"
+
+  - name: attest
+    needs: [sbom, provenance, verify-remote]
+    run: |
+      set -euo pipefail
+      if [ -z "${COSIGN_PRIVATE_KEY:-}" ]; then
+        echo "==> COSIGN_PRIVATE_KEY not set; skipping registry attestation upload"
+        exit 0
+      fi
+      mkdir -p "$TOOLS_BIN"
+      GOBIN="$TOOLS_BIN" go install github.com/sigstore/cosign/v2/cmd/cosign@v2.4.1
+      printf '%s' "$COSIGN_PRIVATE_KEY" > /tmp/cosign.key
+      chmod 0600 /tmp/cosign.key
+      export COSIGN_PASSWORD="${COSIGN_PASSWORD:-}"
+      export COSIGN_YES=true
+      "$TOOLS_BIN/cosign" login -u "${REGISTRY_PUSH_USER}" -p "${REGISTRY_PUSH_PASS}" "${REGISTRY}"
+      DIGEST="$(cat dist/image.digest)"
+      "$TOOLS_BIN/cosign" attest \
+        --key /tmp/cosign.key \
+        --type spdxjson \
+        --predicate dist/binary.spdx.json \
+        "${IMAGE_REF}@${DIGEST}"
+      "$TOOLS_BIN/cosign" attest \
+        --key /tmp/cosign.key \
+        --type slsaprovenance \
+        --predicate dist/provenance.json \
+        "${IMAGE_REF}@${DIGEST}"
+      if [ -n "${COSIGN_PUBLIC_KEY:-}" ]; then
+        printf '%s' "$COSIGN_PUBLIC_KEY" > /tmp/cosign.pub
+        "$TOOLS_BIN/cosign" verify-attestation \
+          --key /tmp/cosign.pub \
+          --type slsaprovenance \
+          "${IMAGE_REF}@${DIGEST}" >/tmp/cosign-verify.json
+        echo "==> cosign verify-attestation succeeded"
+      fi
+      echo "==> attestations uploaded for ${IMAGE_REF}@${DIGEST}"

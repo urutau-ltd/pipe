@@ -205,9 +205,10 @@ reflect the push event. In local mode they reflect the current git state.
 | Variable                | Value                                                 |
 | ----------------------- | ----------------------------------------------------- |
 | `PIPE_REPO`             | Repository name                                       |
-| `PIPE_BRANCH`           | Branch name (e.g. `main`)                             |
+| `PIPE_BRANCH`           | Branch name when the run came from `refs/heads/*`     |
 | `PIPE_COMMIT`           | Short commit SHA                                      |
-| `PIPE_REF`              | Full git ref (e.g. `refs/heads/main`)                 |
+| `PIPE_REF`              | Full git ref (e.g. `refs/heads/main`, `refs/tags/v1`) |
+| `PIPE_TAG`              | Tag name when the run came from `refs/tags/*`         |
 | `PIPE_PIPELINE`         | Pipeline file used (e.g. `.pipe/ci.yml`)              |
 | `PIPE_ACTIONS_URL`      | Base URL for shared actions (if configured)           |
 | `PIPE_EXECUTOR_MODE`    | Effective executor mode (`auto`, `container`, `host`) |
@@ -221,7 +222,8 @@ Pipeline-level `env:` keys are also available, overridable by the above.
 
 `pipe` supports secret injection and log masking:
 
-- `--secret-env NAME` injects host env var `NAME` into the run environment
+- `pipe run --secret-env NAME` injects host env var `NAME` into the run environment
+- `pipe server --secret-env NAME` allowlists host env var `NAME` so pipelines can request it via `secrets:`
 - append `?` to make it optional (`--secret-env GITHUB_TOKEN?` or `secrets:
   [GITHUB_TOKEN?]`)
 - values from `--secret-env` are redacted in stdout and log files
@@ -344,6 +346,14 @@ Suggested layout:
   nightly.yml
 ```
 
+This repository now follows that layout itself:
+
+```text
+.pipe/
+  ci.yml
+  release.yml
+```
+
 Local runs:
 
 ```bash
@@ -356,6 +366,20 @@ pipe run --pipeline release --branch main
 # nightly maintenance/security
 pipe run --pipeline nightly --branch main
 ```
+
+For `pipe`'s own self-hosted release pipeline, the server should expose at least:
+
+- `REGISTRY_PUSH_USER`
+- `REGISTRY_PUSH_PASS`
+
+Optional attestation secrets:
+
+- `COSIGN_PRIVATE_KEY`
+- `COSIGN_PASSWORD`
+- `COSIGN_PUBLIC_KEY`
+
+Tag pushes are expected to run `.pipe/release.yml`, which publishes
+`nest.urutau-ltd.org/pipe:<tag>` and `nest.urutau-ltd.org/pipe:latest`.
 
 Server mode uses a worker pool (`--workers`, default `1`). Send
 `"pipeline":"ci"` for one pipeline, or `"pipelines":["ci","release"]` to run
@@ -393,7 +417,7 @@ pipe server --gotify-endpoint "https://gotify.local/message" --gotify-token "$GO
 ### Optional webhook hardening
 
 - request body is capped at `64KiB`
-- only branch refs (`refs/heads/*`) are accepted
+- branch and tag refs (`refs/heads/*`, `refs/tags/*`) are accepted
 - server uses sane read/write timeout defaults
 - startup preflight validates executor/runtime + pull policy
 - periodic log pruning keeps disk usage bounded (`--log-retention-*`)
@@ -466,6 +490,7 @@ Useful environment overrides (in soft-serve container/service):
 - `PIPELINES_MAIN` (default `["ci","release"]`)
 - `PIPELINES_NIGHTLY` (default `["nightly"]`)
 - `PIPELINES_DEFAULT` (default `["ci"]`)
+- `PIPELINES_TAG` (default `["release"]`)
 - `PIPE_WAIT=1` to poll `/runs` until done and print status/log URL
 
 ### Optional Gotify notifications

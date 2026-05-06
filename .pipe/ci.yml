@@ -1,0 +1,27 @@
+name: pipe-ci
+image: docker.io/library/golang:1.26-bookworm
+
+env:
+  PATH: /usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+steps:
+  - name: vet
+    parallel: true
+    run: go vet ./...
+
+  - name: test
+    parallel: true
+    run: |
+      RACE=""
+      [ "$(go env CGO_ENABLED)" = "1" ] && RACE="-race"
+      go test $RACE -count=1 ./...
+
+  - name: build
+    run: |
+      mkdir -p dist
+      CGO_ENABLED=0 go build \
+        -buildvcs=false \
+        -ldflags="-s -w -X main.version=${PIPE_COMMIT:-dev}" \
+        -o dist/pipe .
+      echo "==> $(./dist/pipe version)"
+      ls -lh dist/pipe

@@ -35,11 +35,46 @@ func injectSecretEnv(env map[string]string, names []string) error {
 			if optional {
 				continue
 			}
-			return fmt.Errorf("missing secret env %q", name)
+			return fmt.Errorf("missing secret env %q (set it on the pipe host or mark it optional with ?)", name)
 		}
 		env[name] = val
 	}
 	return nil
+}
+
+func filterAllowedSecretEnvRefs(requested, allowed []string) ([]string, error) {
+	if len(requested) == 0 {
+		return nil, nil
+	}
+	if len(allowed) == 0 {
+		return append([]string{}, requested...), nil
+	}
+
+	allowedNames := make(map[string]struct{}, len(allowed))
+	for _, raw := range allowed {
+		name, _, err := parseSecretEnvRef(raw)
+		if err != nil {
+			return nil, err
+		}
+		allowedNames[name] = struct{}{}
+	}
+
+	out := make([]string, 0, len(requested))
+	for _, raw := range requested {
+		name, optional, err := parseSecretEnvRef(raw)
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := allowedNames[name]; ok {
+			out = append(out, raw)
+			continue
+		}
+		if optional {
+			continue
+		}
+		return nil, fmt.Errorf("secret env %q is not allowed by server", name)
+	}
+	return out, nil
 }
 
 func wrapWithSecretRedactor(out io.Writer, env map[string]string, secretNames, extraMasks []string) io.Writer {

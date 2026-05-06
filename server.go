@@ -134,6 +134,9 @@ func StartServer(cfg ServerConfig) {
 	if err := validateServerRuntime(cfg); err != nil {
 		log.Fatalf("pipe: runtime preflight failed: %v", err)
 	}
+	if err := pruneManagedServerRuntimeArtifacts(cfg, io.Discard); err != nil {
+		log.Printf("pipe: runtime prune skipped: %v", err)
+	}
 
 	if err := os.MkdirAll(filepath.Join(cfg.WorkDir, "logs"), 0o755); err != nil {
 		log.Fatalf("pipe: creating workdir: %v", err)
@@ -324,7 +327,13 @@ func StartServer(cfg ServerConfig) {
 
 func processJob(j job, cfg ServerConfig, tracker *runTracker) {
 	p := j.payload
-	branch := stripBranch(p.Ref)
+	refInfo, err := parseGitRef(p.Ref)
+	if err != nil {
+		log.Printf("pipe: invalid ref during processing %q: %v", p.Ref, err)
+		return
+	}
+	branch := refInfo.ExecutionBranch()
+	refName := refInfo.Name
 	status := jobStatusFail
 	detail := "internal error"
 	commitSHA := p.New
@@ -340,6 +349,9 @@ func processJob(j job, cfg ServerConfig, tracker *runTracker) {
 	defer func() {
 		if tracker != nil && strings.TrimSpace(j.runID) != "" {
 			tracker.finish(j.runID, status, detail, commitSHA)
+		}
+		if err := pruneManagedServerRuntimeArtifacts(cfg, io.Discard); err != nil {
+			log.Printf("pipe: runtime prune skipped: %v", err)
 		}
 		if removed, err := pruneServerLogs(filepath.Join(cfg.WorkDir, "logs"), cfg.LogRetentionDays, cfg.LogRetentionCount); err != nil {
 			log.Printf("pipe: log prune failed: %v", err)
@@ -372,7 +384,7 @@ func processJob(j job, cfg ServerConfig, tracker *runTracker) {
 		fmt.Fprintf(out, "[pipe] "+format+"\n", a...)
 	}
 
-	logf("triggered  repo=%s ref=%s branch=%s pipeline=%s", p.Repo, p.Ref, branch, pipelineFile)
+	logf("triggered  repo=%s ref=%s ref-name=%s pipeline=%s", p.Repo, p.Ref, refName, pipelineFile)
 	workspace, err := cfg.workspaceManager.prepareRun(out, repoWorkspaceRequest{
 		RepoName:  repoName,
 		CloneURL:  cloneURL,
@@ -419,42 +431,48 @@ func processJob(j job, cfg ServerConfig, tracker *runTracker) {
 
 	envMap := map[string]string{
 		"PIPE_REPO":     p.Repo,
-		"PIPE_BRANCH":   branch,
+		"PIPE_BRANCH":   "",
 		"PIPE_COMMIT":   commitSHA,
 		"PIPE_REF":      p.Ref,
 		"PIPE_PIPELINE": pipelineFile,
+	}
+	if refInfo.Kind == "branch" {
+		envMap["PIPE_BRANCH"] = refInfo.Name
+	}
+	if refInfo.Kind == "tag" {
+		envMap["PIPE_TAG"] = refInfo.Name
 	}
 	if actionsURL != "" {
 		envMap["PIPE_ACTIONS_URL"] = actionsURL
 	}
 
 	results := RunPipeline(pipeline, RunOptions{
-		Dir:             repoDir,
-		Branch:          branch,
-		Output:          out,
-		NoColor:         cfg.NoColor,
-		LogFormat:       cfg.LogFormat,
-		PullPolicy:      cfg.PullPolicy,
-		Executor:        cfg.Executor,
-		ContainerEngine: cfg.ContainerEngine,
-		ContainerSocket: cfg.ContainerSocket,
-		ContainerImage:  cfg.ContainerImage,
-		SecretEnv:       cfg.SecretEnv,
-		SecretMask:      cfg.SecretMask,
-		NoMaskSecrets:   cfg.NoMaskSecrets,
-		Env:             envMap,
+		Dir:              repoDir,
+		Branch:           branch,
+		Output:           out,
+		NoColor:          cfg.NoColor,
+		LogFormat:        cfg.LogFormat,
+		PullPolicy:       cfg.PullPolicy,
+		Executor:         cfg.Executor,
+		ContainerEngine:  cfg.ContainerEngine,
+		ContainerSocket:  cfg.ContainerSocket,
+		ContainerImage:   cfg.ContainerImage,
+		AllowedSecretEnv: cfg.SecretEnv,
+		SecretMask:       cfg.SecretMask,
+		NoMaskSecrets:    cfg.NoMaskSecrets,
+		Env:              envMap,
 	})
 
 	if HasFailure(results) {
 		status = jobStatusFail
 		detail = "pipeline failed"
-		logf("FAILED  repo=%s branch=%s", p.Repo, branch)
+		logf("FAILED  repo=%s ref=%s", p.Repo, refName)
 		return
 	}
 
 	status = jobStatusOK
 	detail = "pipeline passed"
-	logf("OK  repo=%s branch=%s", p.Repo, branch)
+	logf("OK  repo=%s ref=%s", p.Repo, refName)
 }
 
 func notifyGotify(cfg ServerConfig, p pushPayload, pipelineFile, branch, commit string, status jobResultStatus, detail, logName, runID string) error {
@@ -549,6 +567,25 @@ func validateServerRuntime(cfg ServerConfig) error {
 	}
 	log.Printf("pipe: runtime preflight executor=%s engine=%s socket=%s", mode, rt.Name, socketLabel)
 	return nil
+}
+
+func pruneManagedServerRuntimeArtifacts(cfg ServerConfig, out io.Writer) error {
+	mode, err := normalizeExecutorMode(cfg.Executor)
+	if err != nil {
+		return err
+	}
+	if mode == "host" {
+		return nil
+	}
+
+	rt, err := detectContainerRuntime(cfg.ContainerEngine, cfg.ContainerSocket)
+	if err != nil {
+		if mode == "container" {
+			return err
+		}
+		return nil
+	}
+	return pruneManagedRuntimeArtifacts(*rt, out)
 }
 
 func parseLabelMap(raw []string) (map[string]string, error) {
@@ -736,30 +773,27 @@ func sanitizeRepo(repo string) (string, error) {
 	return clean, nil
 }
 
-// validateRef allows only regular branch refs.
 func validateRef(ref string) error {
-	const prefix = "refs/heads/"
-	if !strings.HasPrefix(ref, prefix) {
-		return fmt.Errorf("only refs/heads/* are supported")
-	}
+	_, err := parseGitRef(ref)
+	return err
+}
 
-	branch := stripBranch(ref)
-	if branch == "" {
-		return fmt.Errorf("branch is empty")
+func validateGitRefName(name string) error {
+	if name == "" {
+		return fmt.Errorf("ref name is empty")
 	}
-	if strings.HasPrefix(branch, "/") || strings.HasSuffix(branch, "/") {
-		return fmt.Errorf("invalid branch name")
+	if strings.HasPrefix(name, "/") || strings.HasSuffix(name, "/") {
+		return fmt.Errorf("invalid ref name")
 	}
-	if strings.Contains(branch, "//") || strings.Contains(branch, "..") || strings.Contains(branch, "@{") {
-		return fmt.Errorf("invalid branch name")
+	if strings.Contains(name, "//") || strings.Contains(name, "..") || strings.Contains(name, "@{") {
+		return fmt.Errorf("invalid ref name")
 	}
-	if strings.HasPrefix(branch, ".") || strings.HasSuffix(branch, ".") || strings.HasSuffix(branch, ".lock") {
-		return fmt.Errorf("invalid branch name")
+	if strings.HasPrefix(name, ".") || strings.HasSuffix(name, ".") || strings.HasSuffix(name, ".lock") {
+		return fmt.Errorf("invalid ref name")
 	}
-	if strings.ContainsAny(branch, " \t\n\r~^:?*[]\\\x00") {
-		return fmt.Errorf("invalid branch name")
+	if strings.ContainsAny(name, " \t\n\r~^:?*[]\\\x00") {
+		return fmt.Errorf("invalid ref name")
 	}
-
 	return nil
 }
 

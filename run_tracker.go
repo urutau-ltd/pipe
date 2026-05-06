@@ -59,7 +59,7 @@ func (t *runTracker) enqueue(p pushPayload, pipelineFile, logName string) string
 		ID:       id,
 		Repo:     p.Repo,
 		Ref:      p.Ref,
-		Branch:   stripBranch(p.Ref),
+		Branch:   trackedRefName(p.Ref),
 		Pipeline: pipelineFile,
 		Log:      logName,
 		Status:   string(jobStatusQueued),
@@ -70,6 +70,14 @@ func (t *runTracker) enqueue(p pushPayload, pipelineFile, logName string) string
 	t.order = append(t.order, id)
 	t.trimLocked()
 	return id
+}
+
+func trackedRefName(ref string) string {
+	info, err := parseGitRef(ref)
+	if err != nil {
+		return strings.TrimSpace(ref)
+	}
+	return info.Name
 }
 
 func (t *runTracker) drop(id string) {

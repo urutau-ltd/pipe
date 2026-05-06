@@ -43,6 +43,35 @@ func TestParseSecretEnvRef(t *testing.T) {
 	}
 }
 
+func TestFilterAllowedSecretEnvRefs(t *testing.T) {
+	t.Run("unrestricted passthrough", func(t *testing.T) {
+		got, err := filterAllowedSecretEnvRefs([]string{"GITHUB_TOKEN"}, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(got) != 1 || got[0] != "GITHUB_TOKEN" {
+			t.Fatalf("unexpected refs: %#v", got)
+		}
+	})
+
+	t.Run("required secret must be allowed", func(t *testing.T) {
+		_, err := filterAllowedSecretEnvRefs([]string{"REGISTRY_PUSH_USER"}, []string{"GITHUB_TOKEN"})
+		if err == nil {
+			t.Fatal("expected error for disallowed required secret")
+		}
+	})
+
+	t.Run("optional disallowed secret is skipped", func(t *testing.T) {
+		got, err := filterAllowedSecretEnvRefs([]string{"REGISTRY_PUSH_USER?"}, []string{"GITHUB_TOKEN"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(got) != 0 {
+			t.Fatalf("expected optional disallowed secret to be skipped, got %#v", got)
+		}
+	})
+}
+
 func TestWrapWithSecretRedactor(t *testing.T) {
 	t.Setenv("PIPE_TEST_PASSWORD", "host-pass-12345")
 

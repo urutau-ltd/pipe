@@ -215,7 +215,7 @@ func serverCommand(args []string) {
 	var labels stringSliceFlag
 	fs.Var(&labels, "label", "server label key=value (repeatable)")
 	var secretEnv stringSliceFlag
-	fs.Var(&secretEnv, "secret-env", "host env var name to inject and redact from logs (repeatable, suffix ? for optional)")
+	fs.Var(&secretEnv, "secret-env", "host env var name that pipelines may request from the server (repeatable, suffix ? accepted)")
 	var secretMask stringSliceFlag
 	fs.Var(&secretMask, "mask", "literal value to redact from logs (repeatable)")
 	logFormat := fs.String("log-format", "auto", "log format: auto, pretty, plain")

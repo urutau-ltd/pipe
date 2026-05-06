@@ -45,7 +45,7 @@ func TestValidateRef(t *testing.T) {
 	}{
 		{name: "valid main", ref: "refs/heads/main", wantErr: false},
 		{name: "valid feature", ref: "refs/heads/feature/x", wantErr: false},
-		{name: "tag not allowed", ref: "refs/tags/v1.0.0", wantErr: true},
+		{name: "valid tag", ref: "refs/tags/v1.0.0", wantErr: false},
 		{name: "double dot", ref: "refs/heads/feat..x", wantErr: true},
 		{name: "space", ref: "refs/heads/feat x", wantErr: true},
 		{name: "empty branch", ref: "refs/heads/", wantErr: true},
@@ -61,6 +61,15 @@ func TestValidateRef(t *testing.T) {
 				t.Fatalf("unexpected error for %q: %v", tc.ref, err)
 			}
 		})
+	}
+}
+
+func TestValidateGitRefName(t *testing.T) {
+	if err := validateGitRefName("v1.2.3"); err != nil {
+		t.Fatalf("expected tag-like ref name to pass: %v", err)
+	}
+	if err := validateGitRefName(".bad"); err == nil {
+		t.Fatal("expected invalid ref name")
 	}
 }
 

@@ -23,21 +23,22 @@ type maybeStep struct {
 
 // RunOptions controls pipeline execution.
 type RunOptions struct {
-	Dir             string            // working directory for steps
-	Branch          string            // branch name for step filtering
-	OnlyStep        string            // if set, only run this step by name
-	Env             map[string]string // extra env vars merged over pipeline-level env
-	Output          io.Writer         // destination for all output (default: os.Stdout)
-	NoColor         bool              // disable ANSI colors in logs
-	LogFormat       string            // auto, pretty, plain
-	PullPolicy      string            // missing, always, never
-	SecretEnv       []string          // host env names injected into the run env (and masked)
-	SecretMask      []string          // extra literal values to redact from logs
-	NoMaskSecrets   bool              // disable log secret masking
-	Executor        string            // auto, container, host
-	ContainerEngine string            // auto, docker, podman
-	ContainerSocket string            // optional unix socket path
-	ContainerImage  string            // default image used when step/pipeline does not set one
+	Dir              string            // working directory for steps
+	Branch           string            // branch name for step filtering
+	OnlyStep         string            // if set, only run this step by name
+	Env              map[string]string // extra env vars merged over pipeline-level env
+	Output           io.Writer         // destination for all output (default: os.Stdout)
+	NoColor          bool              // disable ANSI colors in logs
+	LogFormat        string            // auto, pretty, plain
+	PullPolicy       string            // missing, always, never
+	SecretEnv        []string          // host env names injected into the run env (and masked)
+	AllowedSecretEnv []string          // host env names the pipeline may request from the server
+	SecretMask       []string          // extra literal values to redact from logs
+	NoMaskSecrets    bool              // disable log secret masking
+	Executor         string            // auto, container, host
+	ContainerEngine  string            // auto, docker, podman
+	ContainerSocket  string            // optional unix socket path
+	ContainerImage   string            // default image used when step/pipeline does not set one
 }
 
 // StepResult holds the outcome of a single step.
@@ -86,7 +87,14 @@ func RunPipeline(p *Pipeline, opts RunOptions) []StepResult {
 	env := mergeRunEnv(p.Env, opts.Env)
 	// Keep core system paths reachable even when pipeline PATH is overridden.
 	hardenPathEnv(env)
-	secretEnvNames := append([]string{}, p.Secrets...)
+	requestedSecrets, err := filterAllowedSecretEnvRefs(p.Secrets, opts.AllowedSecretEnv)
+	if err != nil {
+		result := StepResult{Name: "__setup__", Err: err}
+		printStepFail(opts.Output, style, "__setup__", 0, err)
+		printSummary(opts.Output, style, []StepResult{result})
+		return []StepResult{result}
+	}
+	secretEnvNames := append([]string{}, requestedSecrets...)
 	secretEnvNames = append(secretEnvNames, opts.SecretEnv...)
 	if err := injectSecretEnv(env, secretEnvNames); err != nil {
 		result := StepResult{Name: "__setup__", Err: err}
@@ -520,6 +528,7 @@ func runStepInContainer(rt containerRuntime, image, dir string, env map[string]s
 	args := []string{
 		"run",
 		"--rm",
+		"--label", pipeManagedRuntimeLabel,
 		"--workdir", containerWorkspaceDir,
 		"--volume", absDir + ":" + containerWorkspaceDir,
 	}
@@ -681,6 +690,8 @@ fi
 `
 
 const containerWorkspaceDir = "/workspace"
+const pipeManagedRuntimeLabel = "dev.urutau.pipe.managed=true"
+const pipeManagedRuntimeFilter = "label=dev.urutau.pipe.managed=true"
 
 const pipeActionShellFunc = `pipe_action() {
   if [ "$#" -lt 1 ]; then
@@ -713,9 +724,37 @@ const pipeActionShellFunc = `pipe_action() {
 }
 `
 
-// stripBranch converts "refs/heads/main" -> "main".
-func stripBranch(ref string) string {
-	return strings.TrimPrefix(ref, "refs/heads/")
+type gitRef struct {
+	Kind string
+	Name string
+	Full string
+}
+
+func parseGitRef(ref string) (gitRef, error) {
+	raw := strings.TrimSpace(ref)
+	switch {
+	case strings.HasPrefix(raw, "refs/heads/"):
+		name := strings.TrimPrefix(raw, "refs/heads/")
+		if err := validateGitRefName(name); err != nil {
+			return gitRef{}, err
+		}
+		return gitRef{Kind: "branch", Name: name, Full: raw}, nil
+	case strings.HasPrefix(raw, "refs/tags/"):
+		name := strings.TrimPrefix(raw, "refs/tags/")
+		if err := validateGitRefName(name); err != nil {
+			return gitRef{}, err
+		}
+		return gitRef{Kind: "tag", Name: name, Full: raw}, nil
+	default:
+		return gitRef{}, fmt.Errorf("only refs/heads/* and refs/tags/* are supported")
+	}
+}
+
+func (r gitRef) ExecutionBranch() string {
+	if r.Kind == "branch" {
+		return r.Name
+	}
+	return r.Full
 }
 
 // -- service + image helpers --------------------------------------------------
@@ -728,7 +767,7 @@ type serviceSet struct {
 
 func startServiceSet(rt containerRuntime, services []Service, pullPolicy string, imageCache *imagePullCache, out io.Writer, style logStyle) (*serviceSet, error) {
 	network := fmt.Sprintf("pipe-net-%d-%d", os.Getpid(), time.Now().UnixNano())
-	if err := runRuntimeCommand(rt, []string{"network", "create", network}, out); err != nil {
+	if err := runRuntimeCommand(rt, []string{"network", "create", "--label", pipeManagedRuntimeLabel, network}, out); err != nil {
 		return nil, fmt.Errorf("create service network: %w", err)
 	}
 
@@ -756,7 +795,7 @@ func startServiceSet(rt containerRuntime, services []Service, pullPolicy string,
 			return cleanupOnError(fmt.Errorf("service %q cannot set both run and command", alias))
 		}
 
-		args := []string{"run", "-d", "--rm", "--name", containerName, "--network", network, "--network-alias", alias}
+		args := []string{"run", "-d", "--rm", "--label", pipeManagedRuntimeLabel, "--name", containerName, "--network", network, "--network-alias", alias}
 		for _, kv := range envPairs(svc.Env) {
 			args = append(args, "--env", kv)
 		}
@@ -913,6 +952,16 @@ func runRuntimeCommand(rt containerRuntime, args []string, out io.Writer) error 
 	cmd.Stderr = out
 	cmd.Env = runtimeCommandEnv(rt)
 	return cmd.Run()
+}
+
+func pruneManagedRuntimeArtifacts(rt containerRuntime, out io.Writer) error {
+	if err := runRuntimeCommand(rt, []string{"container", "prune", "-f", "--filter", pipeManagedRuntimeFilter}, out); err != nil {
+		return fmt.Errorf("prune containers: %w", err)
+	}
+	if err := runRuntimeCommand(rt, []string{"network", "prune", "-f", "--filter", pipeManagedRuntimeFilter}, out); err != nil {
+		return fmt.Errorf("prune networks: %w", err)
+	}
+	return nil
 }
 
 func uniqStrings(items []string) []string {

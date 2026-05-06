@@ -4,7 +4,7 @@ set -eu
 # Minimal but robust post-receive hook for soft-serve + pipe.
 #
 # Features:
-# - branch->pipelines mapping via env vars
+# - branch/tag -> pipelines mapping via env vars
 # - non-blocking push by default (PIPE_WAIT=0)
 # - optional status polling with /runs endpoint (PIPE_WAIT=1)
 #
@@ -17,10 +17,11 @@ PIPE_WAIT="${PIPE_WAIT:-0}"
 PIPE_WAIT_INTERVAL="${PIPE_WAIT_INTERVAL:-2}"
 PIPE_WAIT_TIMEOUT="${PIPE_WAIT_TIMEOUT:-1800}"
 
-# Per-branch defaults. Override with environment variables if needed.
+# Per-ref defaults. Override with environment variables if needed.
 PIPELINES_MAIN="${PIPELINES_MAIN:-[\"ci\",\"release\"]}"
 PIPELINES_NIGHTLY="${PIPELINES_NIGHTLY:-[\"nightly\"]}"
 PIPELINES_DEFAULT="${PIPELINES_DEFAULT:-[\"ci\"]}"
+PIPELINES_TAG="${PIPELINES_TAG:-[\"release\"]}"
 
 http_post_json() {
     url="$1"
@@ -73,6 +74,9 @@ select_pipelines() {
             ;;
         refs/heads/*)
             printf '%s' "$PIPELINES_DEFAULT"
+            ;;
+        refs/tags/*)
+            printf '%s' "$PIPELINES_TAG"
             ;;
         *)
             printf ''
@@ -132,9 +136,9 @@ wait_for_run() {
 
 while read -r OLD NEW REF; do
     case "$REF" in
-        refs/heads/*) ;;
+        refs/heads/*|refs/tags/*) ;;
         *)
-            echo "pipe hook: ignoring non-branch ref $REF"
+            echo "pipe hook: ignoring unsupported ref $REF"
             continue
             ;;
     esac
