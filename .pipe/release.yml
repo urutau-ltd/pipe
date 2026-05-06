@@ -2,8 +2,8 @@ name: pipe-release
 image: docker.io/library/golang:1.26-bookworm
 
 secrets:
-  - REGISTRY_PUSH_USER
-  - REGISTRY_PUSH_PASS
+  - REGISTRY_PUSH_USER?
+  - REGISTRY_PUSH_PASS?
   - COSIGN_PRIVATE_KEY?
   - COSIGN_PASSWORD?
   - COSIGN_PUBLIC_KEY?
@@ -71,9 +71,18 @@ steps:
     needs: [build-binary]
     run: |
       set -euo pipefail
+      if [ -z "${REGISTRY_PUSH_USER:-}" ] || [ -z "${REGISTRY_PUSH_PASS:-}" ]; then
+        echo "release push requires REGISTRY_PUSH_USER and REGISTRY_PUSH_PASS" >&2
+        exit 1
+      fi
       TAG="$(cat dist/.release-tag)"
+      CREATED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
       buildah build \
         --storage-driver=vfs \
+        --build-arg VERSION="${TAG}" \
+        --build-arg REVISION="${PIPE_COMMIT}" \
+        --build-arg SOURCE="https://nest.urutau-ltd.org/${PIPE_REPO}" \
+        --build-arg CREATED="${CREATED}" \
         -t "${IMAGE_REF}:${TAG}" \
         -t "${IMAGE_REF}:latest" \
         .
@@ -153,6 +162,10 @@ steps:
     needs: [image-push]
     run: |
       set -euo pipefail
+      if [ -z "${REGISTRY_PUSH_USER:-}" ] || [ -z "${REGISTRY_PUSH_PASS:-}" ]; then
+        echo "remote verification requires REGISTRY_PUSH_USER and REGISTRY_PUSH_PASS" >&2
+        exit 1
+      fi
       TAG="$(cat dist/.release-tag)"
       mkdir -p "$TOOLS_BIN"
       GOBIN="$TOOLS_BIN" go install github.com/google/go-containerregistry/cmd/crane@v0.20.3
@@ -171,6 +184,10 @@ steps:
       if [ -z "${COSIGN_PRIVATE_KEY:-}" ]; then
         echo "==> COSIGN_PRIVATE_KEY not set; skipping registry attestation upload"
         exit 0
+      fi
+      if [ -z "${REGISTRY_PUSH_USER:-}" ] || [ -z "${REGISTRY_PUSH_PASS:-}" ]; then
+        echo "cosign attestation requires REGISTRY_PUSH_USER and REGISTRY_PUSH_PASS" >&2
+        exit 1
       fi
       mkdir -p "$TOOLS_BIN"
       GOBIN="$TOOLS_BIN" go install github.com/sigstore/cosign/v2/cmd/cosign@v2.4.1

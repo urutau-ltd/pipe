@@ -18,7 +18,7 @@ PIPE_WAIT_INTERVAL="${PIPE_WAIT_INTERVAL:-2}"
 PIPE_WAIT_TIMEOUT="${PIPE_WAIT_TIMEOUT:-1800}"
 
 # Per-ref defaults. Override with environment variables if needed.
-PIPELINES_MAIN="${PIPELINES_MAIN:-[\"ci\",\"release\"]}"
+PIPELINES_MAIN="${PIPELINES_MAIN:-[\"ci\"]}"
 PIPELINES_NIGHTLY="${PIPELINES_NIGHTLY:-[\"nightly\"]}"
 PIPELINES_DEFAULT="${PIPELINES_DEFAULT:-[\"ci\"]}"
 PIPELINES_TAG="${PIPELINES_TAG:-[\"release\"]}"

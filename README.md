@@ -487,7 +487,7 @@ chmod +x /opt/containers/soft-serve/hooks/post-receive
 Useful environment overrides (in soft-serve container/service):
 
 - `PIPE_ENDPOINT` (default `http://pipe:9000`)
-- `PIPELINES_MAIN` (default `["ci","release"]`)
+- `PIPELINES_MAIN` (default `["ci"]`)
 - `PIPELINES_NIGHTLY` (default `["nightly"]`)
 - `PIPELINES_DEFAULT` (default `["ci"]`)
 - `PIPELINES_TAG` (default `["release"]`)
