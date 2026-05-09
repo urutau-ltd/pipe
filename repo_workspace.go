@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 const nullSHA = "0000000000000000000000000000000000000000"
@@ -118,6 +119,9 @@ func ensureRepoCache(out io.Writer, cacheDir string, req repoWorkspaceRequest) e
 
 	target := targetRevision(req.Branch, req.CommitSHA, req.NullSHA)
 	req.Logf("preparing cache=%s rev=%s", cacheDir, target)
+	if err := ensureTargetRevision(out, cacheDir, target, req); err != nil {
+		return err
+	}
 	if err := gitCommandRunner(out, "-C", cacheDir, "checkout", "--detach", "--force", target); err != nil {
 		return fmt.Errorf("checkout failed: %v", err)
 	}
@@ -128,6 +132,25 @@ func ensureRepoCache(out io.Writer, cacheDir string, req repoWorkspaceRequest) e
 		return fmt.Errorf("clean failed: %v", err)
 	}
 	return nil
+}
+
+func ensureTargetRevision(out io.Writer, cacheDir, target string, req repoWorkspaceRequest) error {
+	if err := gitCommandRunner(out, "-C", cacheDir, "cat-file", "-e", target+"^{commit}"); err == nil {
+		return nil
+	}
+
+	for attempt := 1; attempt <= 3; attempt++ {
+		req.Logf("target %s not available yet, refetching cache=%s attempt=%d/3", target, cacheDir, attempt)
+		if err := syncRepoCache(out, cacheDir, req); err != nil {
+			return err
+		}
+		if err := gitCommandRunner(out, "-C", cacheDir, "cat-file", "-e", target+"^{commit}"); err == nil {
+			return nil
+		}
+		time.Sleep(time.Duration(attempt) * time.Second)
+	}
+
+	return fmt.Errorf("target revision %s not found after refetch", target)
 }
 
 func syncRepoCache(out io.Writer, cacheDir string, req repoWorkspaceRequest) error {
