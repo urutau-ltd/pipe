@@ -116,6 +116,12 @@ func TestAppendGitSafeDirectoryEnv(t *testing.T) {
 	})
 }
 
+func TestNormalizeWorkspaceOwnershipSkipsInvalidIDs(t *testing.T) {
+	if os.Getuid() < 0 || os.Getgid() < 0 {
+		t.Skip("uid/gid unavailable on this platform")
+	}
+}
+
 func TestEnsurePathContains(t *testing.T) {
 	t.Run("appends missing required dirs", func(t *testing.T) {
 		got := ensurePathContains("/usr/bin/deno:/usr/bin:/usr/local/bin", []string{"/usr/bin", "/bin"})

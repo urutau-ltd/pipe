@@ -545,7 +545,47 @@ func runStepInContainer(rt containerRuntime, image, dir string, env map[string]s
 	cmd.Stdout = out
 	cmd.Stderr = out
 	cmd.Env = runtimeCommandEnv(rt)
-	return cmd.Run()
+	runErr := cmd.Run()
+	fixErr := normalizeWorkspaceOwnership(rt, image, absDir, out, network)
+	if runErr != nil {
+		if fixErr != nil {
+			fmt.Fprintf(out, "[pipe] workspace ownership repair failed after step error: %v\n", fixErr)
+		}
+		return runErr
+	}
+	if fixErr != nil {
+		return fixErr
+	}
+	return nil
+}
+
+func normalizeWorkspaceOwnership(rt containerRuntime, image, absDir string, out io.Writer, network string) error {
+	uid := os.Getuid()
+	gid := os.Getgid()
+	if uid < 0 || gid < 0 {
+		return nil
+	}
+
+	args := []string{
+		"run",
+		"--rm",
+		"--label", pipeManagedRuntimeLabel,
+		"--workdir", containerWorkspaceDir,
+		"--volume", absDir + ":" + containerWorkspaceDir,
+	}
+	if strings.TrimSpace(network) != "" {
+		args = append(args, "--network", network)
+	}
+	args = append(args, image, "sh", "-lc", fmt.Sprintf("chown -R %d:%d %s", uid, gid, containerWorkspaceDir))
+
+	cmd := exec.Command(rt.Binary, args...)
+	cmd.Stdout = out
+	cmd.Stderr = out
+	cmd.Env = runtimeCommandEnv(rt)
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("restore workspace ownership: %w", err)
+	}
+	return nil
 }
 
 func appendGitSafeDirectoryEnv(args []string, env map[string]string) []string {
