@@ -540,7 +540,28 @@ func runStepInContainer(rt containerRuntime, image, dir string, env map[string]s
 	for _, kv := range envPairs(env) {
 		args = append(args, "--env", kv)
 	}
-	args = append(args, image, "bash", "-lc", script)
+	shellProbe := []string{
+		"run",
+		"--rm",
+		"--workdir", containerWorkspaceDir,
+		"--volume", absDir + ":" + containerWorkspaceDir,
+	}
+	shellProbe = appendRuntimeAccess(shellProbe, rt)
+	if strings.TrimSpace(network) != "" {
+		shellProbe = append(shellProbe, "--network", network)
+	}
+	shellProbe = appendGitSafeDirectoryEnv(shellProbe, env)
+	for _, kv := range envPairs(env) {
+		shellProbe = append(shellProbe, "--env", kv)
+	}
+	shellProbe = append(shellProbe, image, "sh", "-c", "command -v bash >/dev/null 2>&1")
+	useBash := exec.Command(rt.Binary, shellProbe...)
+	useBash.Env = runtimeCommandEnv(rt)
+	shellName, shellFlag := "sh", "-c"
+	if err := useBash.Run(); err == nil {
+		shellName, shellFlag = "bash", "-lc"
+	}
+	args = append(args, image, shellName, shellFlag, script)
 
 	cmd := exec.Command(rt.Binary, args...)
 	cmd.Stdout = out
