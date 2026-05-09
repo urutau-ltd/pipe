@@ -346,6 +346,24 @@ Suggested layout:
   nightly.yml
 ```
 
+Optional pipeline-level ref filters:
+
+```yaml
+name: release
+tags:
+  - v*
+```
+
+```yaml
+name: nightly
+branches:
+  - nightly
+  - release/*
+```
+
+When a pipeline-level `branches:` or `tags:` filter does not match, the server
+marks that pipeline as ignored instead of failing the run.
+
 This repository now follows that layout itself:
 
 ```text

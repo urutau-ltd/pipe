@@ -16,6 +16,8 @@ type Pipeline struct {
 	Image    string            `yaml:"image"`
 	Env      map[string]string `yaml:"env"`
 	Labels   map[string]string `yaml:"labels"`
+	Branches []string          `yaml:"branches"`
+	Tags     []string          `yaml:"tags"`
 	Secrets  []string          `yaml:"secrets"`
 	Services []Service         `yaml:"services"`
 	Steps    []Step            `yaml:"steps"`
@@ -187,4 +189,73 @@ func resolveCommit(dir string) string {
 		return "dev"
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// MatchesRef reports whether the pipeline should run for the given git ref.
+// When both branches and tags are empty, the pipeline is eligible for all refs.
+func (p Pipeline) MatchesRef(ref gitRef) bool {
+	if len(p.Branches) == 0 && len(p.Tags) == 0 {
+		return true
+	}
+
+	switch ref.Kind {
+	case "branch":
+		return matchRefPatterns(p.Branches, ref.Name)
+	case "tag":
+		return matchRefPatterns(p.Tags, ref.Name)
+	default:
+		return false
+	}
+}
+
+func matchRefPatterns(patterns []string, name string) bool {
+	if len(patterns) == 0 {
+		return false
+	}
+	for _, raw := range patterns {
+		pattern := strings.TrimSpace(raw)
+		if pattern == "" {
+			continue
+		}
+		if wildcardMatch(pattern, name) {
+			return true
+		}
+	}
+	return false
+}
+
+func wildcardMatch(pattern, value string) bool {
+	if pattern == "*" {
+		return true
+	}
+	if !strings.Contains(pattern, "*") {
+		return pattern == value
+	}
+
+	parts := strings.Split(pattern, "*")
+	if len(parts) == 1 {
+		return pattern == value
+	}
+
+	pos := 0
+	for i, part := range parts {
+		if part == "" {
+			continue
+		}
+		idx := strings.Index(value[pos:], part)
+		if idx < 0 {
+			return false
+		}
+		idx += pos
+		if i == 0 && parts[0] != "" && idx != 0 {
+			return false
+		}
+		pos = idx + len(part)
+	}
+
+	last := parts[len(parts)-1]
+	if last != "" && !strings.HasSuffix(value, last) {
+		return false
+	}
+	return true
 }

@@ -42,3 +42,35 @@ func TestStepShouldRunForPipelineStatus(t *testing.T) {
 		t.Fatal("always step should run on failure")
 	}
 }
+
+func TestPipelineMatchesRef(t *testing.T) {
+	p := Pipeline{Branches: []string{"main", "release/*"}}
+	ref, err := parseGitRef("refs/heads/main")
+	if err != nil {
+		t.Fatalf("parseGitRef failed: %v", err)
+	}
+	if !p.MatchesRef(ref) {
+		t.Fatal("expected branch pipeline to match main")
+	}
+
+	ref, err = parseGitRef("refs/heads/release/v2")
+	if err != nil {
+		t.Fatalf("parseGitRef failed: %v", err)
+	}
+	if !p.MatchesRef(ref) {
+		t.Fatal("expected wildcard branch pattern to match")
+	}
+
+	ref, err = parseGitRef("refs/tags/v2.1.10")
+	if err != nil {
+		t.Fatalf("parseGitRef failed: %v", err)
+	}
+	if p.MatchesRef(ref) {
+		t.Fatal("did not expect branch-only pipeline to match tag")
+	}
+
+	p = Pipeline{Tags: []string{"v2.*", "stable-*"}}
+	if !p.MatchesRef(ref) {
+		t.Fatal("expected tag pipeline to match v2 tag")
+	}
+}

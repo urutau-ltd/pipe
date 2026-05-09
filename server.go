@@ -422,6 +422,12 @@ func processJob(j job, cfg ServerConfig, tracker *runTracker) {
 		logf("%s", detail)
 		return
 	}
+	if !pipeline.MatchesRef(refInfo) {
+		status = jobStatusIgnored
+		detail = fmt.Sprintf("pipeline ref filter mismatch ref=%s branches=%v tags=%v", p.Ref, pipeline.Branches, pipeline.Tags)
+		logf("%s", detail)
+		return
+	}
 	if !pipelineMatchesLabels(pipeline.Labels, cfg.Labels) {
 		status = jobStatusIgnored
 		detail = fmt.Sprintf("labels mismatch pipeline=%v server=%v", pipeline.Labels, cfg.Labels)

@@ -1,5 +1,7 @@
 name: pipe-release
 image: docker.io/library/golang:1.26-bookworm
+tags:
+  - v*
 
 secrets:
   - REGISTRY_PUSH_USER?
