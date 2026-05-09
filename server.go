@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -321,7 +322,7 @@ func StartServer(cfg ServerConfig) {
 		mode = "off"
 	}
 	log.Printf("pipe: listening on %s  clone=%s  workdir=%s  cpus=%d  workers=%d  queue=%d  executor=%s  engine=%s  pull=%s  log-format=%s  log-retention-days=%d  log-retention-count=%d  labels=%v  gotify=%s",
-		addr, cfg.CloneBaseURL, cfg.WorkDir, runtime.NumCPU(), cfg.Workers, cfg.QueueSize, cfg.Executor, cfg.ContainerEngine, cfg.PullPolicy, cfg.LogFormat, cfg.LogRetentionDays, cfg.LogRetentionCount, cfg.Labels, mode)
+		addr, sanitizeURLForLogs(cfg.CloneBaseURL), cfg.WorkDir, runtime.NumCPU(), cfg.Workers, cfg.QueueSize, cfg.Executor, cfg.ContainerEngine, cfg.PullPolicy, cfg.LogFormat, cfg.LogRetentionDays, cfg.LogRetentionCount, cfg.Labels, mode)
 	log.Fatal(app.Run(context.Background()))
 }
 
@@ -745,6 +746,27 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 	if err := json.NewEncoder(w).Encode(body); err != nil {
 		log.Printf("pipe: write json response failed: %v", err)
 	}
+}
+
+func sanitizeURLForLogs(raw string) string {
+	v := strings.TrimSpace(raw)
+	if v == "" {
+		return ""
+	}
+	u, err := url.Parse(v)
+	if err != nil {
+		return v
+	}
+	if u.User == nil {
+		return u.String()
+	}
+	username := u.User.Username()
+	if username == "" {
+		u.User = url.User(redactedValue)
+		return u.String()
+	}
+	u.User = url.UserPassword(username, redactedValue)
+	return u.String()
 }
 
 func gitRun(w io.Writer, args ...string) error {

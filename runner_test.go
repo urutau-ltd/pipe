@@ -122,6 +122,21 @@ func TestNormalizeWorkspaceOwnershipSkipsInvalidIDs(t *testing.T) {
 	}
 }
 
+func TestAppendRuntimeAccess(t *testing.T) {
+	args := appendRuntimeAccess([]string{"run"}, containerRuntime{
+		SocketPath:   "/var/run/docker.sock",
+		HostEnvKey:   "DOCKER_HOST",
+		HostEnvValue: "unix:///var/run/docker.sock",
+	})
+	got := strings.Join(args, "\x00")
+	if !strings.Contains(got, "/var/run/docker.sock:/var/run/docker.sock") {
+		t.Fatalf("expected socket bind mount, got %#v", args)
+	}
+	if !strings.Contains(got, "DOCKER_HOST=unix:///var/run/docker.sock") {
+		t.Fatalf("expected runtime env, got %#v", args)
+	}
+}
+
 func TestEnsurePathContains(t *testing.T) {
 	t.Run("appends missing required dirs", func(t *testing.T) {
 		got := ensurePathContains("/usr/bin/deno:/usr/bin:/usr/local/bin", []string{"/usr/bin", "/bin"})

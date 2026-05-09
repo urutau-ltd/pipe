@@ -532,6 +532,7 @@ func runStepInContainer(rt containerRuntime, image, dir string, env map[string]s
 		"--workdir", containerWorkspaceDir,
 		"--volume", absDir + ":" + containerWorkspaceDir,
 	}
+	args = appendRuntimeAccess(args, rt)
 	if strings.TrimSpace(network) != "" {
 		args = append(args, "--network", network)
 	}
@@ -573,6 +574,7 @@ func normalizeWorkspaceOwnership(rt containerRuntime, image, absDir string, out 
 		"--workdir", containerWorkspaceDir,
 		"--volume", absDir + ":" + containerWorkspaceDir,
 	}
+	args = appendRuntimeAccess(args, rt)
 	if strings.TrimSpace(network) != "" {
 		args = append(args, "--network", network)
 	}
@@ -603,6 +605,17 @@ func appendGitSafeDirectoryEnv(args []string, env map[string]string) []string {
 		"--env", "GIT_CONFIG_KEY_0=safe.directory",
 		"--env", "GIT_CONFIG_VALUE_0="+containerWorkspaceDir,
 	)
+}
+
+func appendRuntimeAccess(args []string, rt containerRuntime) []string {
+	if strings.TrimSpace(rt.SocketPath) == "" {
+		return args
+	}
+	args = append(args, "--volume", rt.SocketPath+":"+rt.SocketPath)
+	if rt.HostEnvKey != "" && rt.HostEnvValue != "" {
+		args = append(args, "--env", rt.HostEnvKey+"="+rt.HostEnvValue)
+	}
+	return args
 }
 
 func envPairs(env map[string]string) []string {

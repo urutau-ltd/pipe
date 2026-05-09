@@ -69,7 +69,7 @@ steps:
       echo "==> SBOMs written to dist/source.spdx.json and dist/binary.spdx.json"
 
   - name: image-push
-    image: quay.io/buildah/stable
+    image: docker.io/library/docker:cli
     needs: [build-binary]
     run: |
       set -euo pipefail
@@ -79,8 +79,7 @@ steps:
       fi
       TAG="$(cat dist/.release-tag)"
       CREATED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-      buildah build \
-        --storage-driver=vfs \
+      docker build \
         --build-arg VERSION="${TAG}" \
         --build-arg REVISION="${PIPE_COMMIT}" \
         --build-arg SOURCE="https://nest.urutau-ltd.org/${PIPE_REPO}" \
@@ -88,17 +87,10 @@ steps:
         -t "${IMAGE_REF}:${TAG}" \
         -t "${IMAGE_REF}:latest" \
         .
-      buildah push \
-        --storage-driver=vfs \
-        --digestfile dist/image.digest \
-        --creds "${REGISTRY_PUSH_USER}:${REGISTRY_PUSH_PASS}" \
-        "${IMAGE_REF}:${TAG}"
-      buildah push \
-        --storage-driver=vfs \
-        --creds "${REGISTRY_PUSH_USER}:${REGISTRY_PUSH_PASS}" \
-        "${IMAGE_REF}:latest"
-      cp dist/image.digest dist/image.digest.raw
-      tr -d '\n' < dist/image.digest.raw > dist/image.digest
+      printf '%s\n' "${REGISTRY_PUSH_PASS}" | docker login "${REGISTRY}" --username "${REGISTRY_PUSH_USER}" --password-stdin
+      docker push "${IMAGE_REF}:${TAG}"
+      docker push "${IMAGE_REF}:latest"
+      docker image inspect "${IMAGE_REF}:${TAG}" --format '{{index .RepoDigests 0}}' | sed 's|.*@||' > dist/image.digest
       echo "==> pushed ${IMAGE_REF}:${TAG} and ${IMAGE_REF}:latest"
       echo "==> digest $(cat dist/image.digest)"
 

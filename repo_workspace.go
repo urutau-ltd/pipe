@@ -152,7 +152,7 @@ func cloneRepoCache(out io.Writer, cacheDir string, req repoWorkspaceRequest) er
 	if err := os.MkdirAll(filepath.Dir(cacheDir), 0o755); err != nil {
 		return fmt.Errorf("create repo cache root: %w", err)
 	}
-	req.Logf("cloning %s", req.CloneURL)
+	req.Logf("cloning %s", sanitizeURLForLogs(req.CloneURL))
 	if err := gitCommandRunner(out, "clone", req.CloneURL, cacheDir); err != nil {
 		return fmt.Errorf("clone failed: %v", err)
 	}
