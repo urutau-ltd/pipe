@@ -164,9 +164,7 @@ steps:
       mkdir -p "$TOOLS_BIN"
       GOBIN="$TOOLS_BIN" go install github.com/google/go-containerregistry/cmd/crane@v0.20.3
       DIGEST="$(cat dist/image.digest)"
-      export CRANE_USERNAME="${REGISTRY_PUSH_USER}"
-      export CRANE_PASSWORD="${REGISTRY_PUSH_PASS}"
-      REMOTE_DIGEST="$("$TOOLS_BIN/crane" digest "${IMAGE_REF}:${TAG}")"
+      REMOTE_DIGEST="$("$TOOLS_BIN/crane" digest -u "${REGISTRY_PUSH_USER}" -p "${REGISTRY_PUSH_PASS}" "${IMAGE_REF}:${TAG}")"
       if [ "$REMOTE_DIGEST" != "$DIGEST" ]; then
         echo "remote digest mismatch: expected '$DIGEST' got '$REMOTE_DIGEST'" >&2
         exit 1
